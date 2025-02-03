@@ -73,8 +73,6 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
         print("No data in MPDS JSON.")
         return None
 
-    print("reading MPDS liquidus from entry at " + mpds_json['reference']['entry'] + "...\n")
-
     data = next((b['svgpath'] for b in mpds_json['shapes'] if b.get('label') == 'L'), "")
     if not data:
         print("No liquidus data found.")
@@ -171,11 +169,12 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
     return mpds_liquidus
 
 
-def load_mpds_data(input) -> tuple[dict, dict, list[list] | None]:
+def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
     """Retrieves MPDS data for a binary system.
     
     Args:
         input (str or list): System specification (e.g., 'A-B' or ['A', 'B']).
+        verbose (bool): If True, outputs additional debugging information.
 
     Returns:
         tuple[dict, dict, list[list]]: A tuple containing the system MPDS JSON, component thermodynamic data, and
@@ -188,16 +187,19 @@ def load_mpds_data(input) -> tuple[dict, dict, list[list] | None]:
         for comp in components
     }
 
-    for comp, data in component_data.items():
-        print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
+    if verbose:
+        for comp, data in component_data.items():
+            print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
 
     sys_file = os.path.join(cache_dir, f"{system}.json")
     if os.path.exists(sys_file):
         with open(sys_file, 'r') as f:
             mpds_json = json.load(f)
-        print("\nLoading JSON from cache.")
+        if verbose:
+                print("\nReading MPDS json from entry at " + mpds_json['reference']['entry'] + "...\n")
     else:
-        print("\nNo cached phase data found; proceeding without it.")
+        if verbose:
+            print("\nNo cached phase data found; proceeding without it.")
         mpds_json = {"reference": None}
 
     return mpds_json, component_data, extract_digitized_liquidus(mpds_json)
@@ -264,30 +266,37 @@ def get_low_temp_phase_data(
     max_phase_temp = 0
 
     identified_phases = identify_mpds_phases(mpds_json)
-    mpds_liquidus = extract_digitized_liquidus(mpds_json, verbose=False)
-
+    mpds_liquidus = extract_digitized_liquidus(mpds_json)
+    
     def phase_decomp_on_liq(phase, liq):
         """Determines if a solid phase decomposes on or near the liquidus."""
         if liq is None:
             return False
         for i in range(len(liq) - 1):
-            x1, y1 = liq[i]
-            x2, y2 = liq[i + 1]
-            px, py = phase['tbounds'][1]
-            if x1 == px:
-                return abs(y1 - py) < 10
-            elif x1 < px < x2:
-                return abs((y1 + y2) / 2 - py) < 10
-        return False
+            if liq[i][0] == phase['tbounds'][1][0]:
+                return abs(liq[i][1] - phase['tbounds'][1][1]) < 10
+            # composition falls between two points:
+            elif liq[i][0] < phase['tbounds'][1][0] < liq[i + 1][0]:
+                return abs((liq[i][1] + liq[i + 1][1]) / 2 - phase['tbounds'][1][1]) < 10
 
     temp_range = mpds_json['temp'][1] - mpds_json['temp'][0]
     temp_threshold = (mpds_json['temp'][0] + 273.15) + temp_range * 0.10
 
     for phase in identified_phases:
         if phase['type'] in {'lc', 'ss'} and phase['tbounds'][0][1] < temp_threshold:
-            phase_dict = mpds_congruent_phases if phase_decomp_on_liq(phase, mpds_liquidus) else mpds_incongruent_phases
-            phase_key = 'cbounds' if phase['type'] == 'ss' else 'comp'
-            phase_dict[phase['name']] = ((phase[phase_key][0][0], phase[phase_key][1][0]), phase['tbounds'][1][1])
+            if phase_decomp_on_liq(phase, mpds_liquidus):
+                if phase['type'] == 'ss':
+                    mpds_congruent_phases[phase['name']] = (
+                        (phase['cbounds'][0][0], phase['cbounds'][1][0]), phase['tbounds'][1][1])
+                else:
+                    mpds_congruent_phases[phase['name']] = ((phase['comp'], phase['comp']), phase['tbounds'][1][1])
+            else:
+                if phase['type'] == 'ss':
+                    mpds_incongruent_phases[phase['name']] = (
+                        (phase['cbounds'][0][0], phase['cbounds'][1][0]), phase['tbounds'][1][1])
+                else:
+                    mpds_incongruent_phases[phase['name']] = (
+                        (phase['comp'], phase['comp']), phase['tbounds'][1][1])
             max_phase_temp = max(phase['tbounds'][1][1], max_phase_temp)
 
     if max_phase_temp == 0 and mpds_liquidus:
