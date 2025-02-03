@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gliquid"
+version = "2025.0.0"
+dependencies = [
+    "emmet_core>=0.83.6",
+    "matplotlib>=3.8.2",
+    "monty>=2024.4.17",
+    "mp_api>=0.41.2",
+    "numpy>=2.2.2",
+    "pandas>=2.2.3",
+    "plotly>=5.18.0",
+    "pymatgen>=2023.11.12",
+    "scipy>=1.15.1",
+    "sympy>=1.12",
+    "tqdm>=4.66.1"
+]
+requires-python = ">=3.9"
+authors = [
+    {name = "Joshua Willwerth", email = "willwerj@umich.edu"},
+    {name = "Shibo Tan", email = "shibot@umich.edu"},
+    {name = "Abrar Rauf", email = "arauf@umich.edu"},
+]
+maintainers = [
+    {name = "Joshua Willwerth", email = "willwerj@umich.edu"}
+]
+description = "A package for fitting DFT-referenced liquid free energies from digitized equilibrium phase boundaries"
+readme = "README.md"
+license = "MIT"
+license-files = []
+keywords = []
+classifiers = [
+    "Programming Language :: Python"
+]
+
+[project.urls]
+Homepage = "https://viz.whsunresearch.group/gliquid/interactive_matrix.html"
+Repository = ""
