@@ -1,6 +1,6 @@
 """
 Authors: Abrar Rauf, Joshua Willwerth
-Date: January 31, 2025
+Last Modified: January 31, 2025
 Description: This script takes the phase energy data in the form of enthalpy (H), entropy (S) and composition (X)
 and performs transformations to composition-temperature (TX) phase diagrams with well-defined coexistence boundaries
 GitHub: https://github.com/AbrarRauf

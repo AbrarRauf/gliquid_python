@@ -1,6 +1,6 @@
 """
 Authors: Joshua Willwerth, Shibo Tan, Abrar Rauf
-Date: January 31, 2025
+Last Modified: January 31, 2025
 Description: This script is designed for the thermodynamic modeling of two-component systems.
 It provides tools for fitting the non-ideal mixing parameters of the liquid phase from T=0K DFT-calculated phases and
 digitized equilibrium phase boundary data. The data stored and produced may be visualized using the BLPlotter class
@@ -1122,7 +1122,7 @@ class BLPlotter:
             else:
                 fig.write_image(stream, format=image_format)
         elif isinstance(fig, plt.Axes):
-            fig.figure.savefig(stream, format=image_format) # TODO: check if this works
+            fig.figure.savefig(stream, format=image_format)
             plt.close(fig)
 
     def _generate_phase_comparison_plot(self) -> plt.Figure:

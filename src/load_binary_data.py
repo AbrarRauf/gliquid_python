@@ -1,9 +1,9 @@
 """
 Author: Joshua Willwerth
-Date: January 31, 2025
+Last Modified: February 17, 2025
 Description: This script provides functions to interface with the Materials Project (MP) APIs and locally cache DFT
 calculated phase data. Publicly-availble data from the Materials Platform for Data Science (MPDS) may be downloaded and
-processed using this script in order to auto populate BinaryLiquid objects using the `from_cache` method.
+processed using this script in order to autopopulate BinaryLiquid objects using the `from_cache` method.
 GitHub: https://github.com/willwerj 
 ORCID: https://orcid.org/0009-0004-6334-9426
 """
@@ -14,8 +14,7 @@ import json
 import numpy as np
 
 from emmet.core.thermo import ThermoType
-from mp_api.client import MPRester as New_MPRester
-from pymatgen.ext.matproj import MPRester as Legacy_MPRester
+from mp_api.client import MPRester as MPRester
 from pymatgen.core import Composition, Element, Structure
 from pymatgen.entries.computed_entries import ComputedEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
@@ -79,9 +78,10 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
         return None
 
     liquidus = shape_to_list(data)
-    
+
     def t_at_boundary(t, boundary):
         return t <= boundary[0] + 4 or t >= boundary[1] - 4
+
     liquidus = [pt for pt in liquidus if not t_at_boundary(pt[1] - 273.15, mpds_json['temp'])]
 
     if len(liquidus) < 3:
@@ -135,15 +135,14 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
             elif sec[-1][0] > main_section[-1][0] and within_tol_from_line(main_section[-1], rhs, sec[-1], 170):
                 main_section += sec
 
-
     # If the liquidus does not have endpoints near the ends of the composition range, melting temps won't be good
     if main_section[0][0] > 0.03 or main_section[-1][0] < 0.97:
         print(f"MPDS liquidus does not span the entire composition range! "
-                f"({100 * main_section[0][0]}-{100 * main_section[-1][0]})")
+              f"({100 * main_section[0][0]}-{100 * main_section[-1][0]})")
         return None
 
     mpds_liquidus = sorted(main_section)
-    
+
     def fill_liquidus(p1, p2, max_interval):
         """Fills in points between two liquidus points (p1 and p2) based on a maximum interval."""
         num_points = int(np.ceil((p2[0] - p1[0]) / max_interval)) + 1  # Include endpoints
@@ -196,7 +195,7 @@ def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
         with open(sys_file, 'r') as f:
             mpds_json = json.load(f)
         if verbose:
-                print("\nReading MPDS json from entry at " + mpds_json['reference']['entry'] + "...\n")
+            print("\nReading MPDS json from entry at " + mpds_json['reference']['entry'] + "...\n")
     else:
         if verbose:
             print("\nNo cached phase data found; proceeding without it.")
@@ -245,7 +244,7 @@ def identify_mpds_phases(mpds_json: dict, verbose=False) -> list[dict]:
 
     if not phases and verbose:
         print("No phase data found in JSON!")
-    
+
     return sorted(phases, key=lambda x: x['comp'])
 
 
@@ -267,7 +266,7 @@ def get_low_temp_phase_data(
 
     identified_phases = identify_mpds_phases(mpds_json)
     mpds_liquidus = extract_digitized_liquidus(mpds_json)
-    
+
     def phase_decomp_on_liq(phase, liq):
         """Determines if a solid phase decomposes on or near the liquidus."""
         if liq is None:
@@ -333,30 +332,26 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str) -> li
             raise ValueError(f"Environment variable for {client_class.__name__} must contain a valid API key!")
         with client_class(api_key) as MPR:
             criteria = {'thermo_types': [thermo_type]} if thermo_type else {}
-            return MPR.get_entries_in_chemsys(components, additional_criteria=criteria, inc_structure=True)
+            return MPR.get_entries_in_chemsys(components, additional_criteria=criteria)
 
-    if dft_type == 'GGA':
-        legacy_mp_api_key = os.getenv('LEGACY_MP_API_KEY')
-        entries = fetch_entries(legacy_mp_api_key, Legacy_MPRester)
-    else:
-        new_mp_api_key = os.getenv('NEW_MP_API_KEY')
-        scan_entries, ggau_entries = [], []
+    new_mp_api_key = os.getenv('NEW_MP_API_KEY')
+    scan_entries, ggau_entries = [], []
 
-        if dft_type in {'R2SCAN', 'GGA/GGA+U/R2SCAN'}:
-            scan_entries = fetch_entries(new_mp_api_key, New_MPRester, ThermoType.R2SCAN)
-        if dft_type in {'GGA/GGA+U', 'GGA/GGA+U/R2SCAN'}:
-            ggau_entries = fetch_entries(new_mp_api_key, New_MPRester, ThermoType.GGA_GGA_U)
+    if dft_type in {'R2SCAN', 'GGA/GGA+U/R2SCAN'}:
+        scan_entries = fetch_entries(new_mp_api_key, MPRester, ThermoType.R2SCAN)
+    if dft_type in {'GGA/GGA+U', 'GGA/GGA+U/R2SCAN'}:
+        ggau_entries = fetch_entries(new_mp_api_key, MPRester, ThermoType.GGA_GGA_U)
 
-        if dft_type == 'GGA/GGA+U/R2SCAN':
-            entries = MaterialsProjectDFTMixingScheme().process_entries(scan_entries + ggau_entries, verbose=False)
-        elif dft_type == 'GGA/GGA+U':
-            entries = ggau_entries
-        elif dft_type == 'R2SCAN':
-            entries = scan_entries
+    if dft_type == 'GGA/GGA+U/R2SCAN':
+        entries = MaterialsProjectDFTMixingScheme().process_entries(scan_entries + ggau_entries, verbose=False)
+    elif dft_type == 'GGA/GGA+U':
+        entries = ggau_entries
+    elif dft_type == 'R2SCAN':
+        entries = scan_entries
 
     computed_entry_dicts = [e.as_dict() for e in entries]
 
-    # Filter out Mg149 phase and remove unnecessary data to reduce cache size
+    # Filter out Mg149 phase and remove run data to reduce cache size
     computed_entry_dicts = [e for e in computed_entry_dicts if e['composition'].get('Mg', 0) != 149]
     for e in computed_entry_dicts:
         e.pop('data', None)
@@ -380,7 +375,7 @@ def get_dft_convexhull(input, dft_type='GGA/GGA+U',
     """
     components, sys_name = validate_and_format_binary_system(input)
 
-    supported_dft_types = ["GGA", "GGA/GGA+U", "R2SCAN", "GGA/GGA+U/R2SCAN"]
+    supported_dft_types = ["GGA/GGA+U", "R2SCAN", "GGA/GGA+U/R2SCAN"]
     if dft_type not in supported_dft_types:
         raise SyntaxError(
             f"dft_type '{dft_type}' is not currently supported! "

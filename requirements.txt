@@ -1,12 +1,4 @@
-emmet_core==0.83.6
-jupyter>=1.1.1
-matplotlib>=3.8.2
-monty>=2024.4.17
-mp_api==0.41.2
-numpy>=1.26.2
-pandas>=2.1.3
 plotly>=5.18.0,<6.0.0
-pymatgen==2023.11.12
-scipy>=1.11.4
-sympy>=1.12
-tqdm>=4.66.1
+nbformat>=4.2.0
+mp-api>=0.45.1
+jupyter>=1.1.1
