@@ -22,18 +22,16 @@ from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay
 # from auth import key as MAPI_KEY
 
-import warnings
-
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
-from gliquid.gliquid_binary import (
+from gliquid.binary import (
     BinaryLiquid,
     linear_expr, exponential_expr, combined_expr)
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
 from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2
 
 # mpr = MPRester(MAPI_KEY)
-mpr = MPRester("Jcw46im7UV1xOfHzbZZ8nkq8BH00Pf6s")  # Use environment variable for MP_API_KEY
+mpr = MPRester("YOUR API KEY HERE")  # Use environment variable for MP_API_KEY
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant

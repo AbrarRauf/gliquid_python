@@ -40,4 +40,4 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://viz.whsunresearch.group/gliquid/interactive_matrix.html"
-Repository = "https://github.com/willwerj/GLiquid"
+Repository = "https://github.com/willwerj/gliquid_python"
