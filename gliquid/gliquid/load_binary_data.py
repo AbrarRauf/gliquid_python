@@ -1,6 +1,6 @@
 """
 Author: Joshua Willwerth
-Last Modified: February 17, 2025
+Last Modified: June 30, 2025
 Description: This script provides functions to interface with the Materials Project (MP) APIs and locally cache DFT
 calculated phase data. Publicly-availble data from the Materials Platform for Data Science (MPDS) may be downloaded and
 processed using this script in order to autopopulate BinaryLiquid objects using the `from_cache` method.
@@ -19,38 +19,49 @@ from pymatgen.core import Composition, Element, Structure
 from pymatgen.entries.computed_entries import ComputedEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
 from pymatgen.entries.mixing_scheme import MaterialsProjectDFTMixingScheme
+from sympy import comp
+from gliquid.config import data_dir, fusion_enthalpies_file, fusion_temps_file, vaporization_temps_file
 
-project_root = os.path.abspath(os.path.join(os.getcwd(), ".."))
-cache_dir = os.getenv("CACHE_DIRECTORY", os.path.join(project_root, "data"))
-
-fusion_enthalpies_file = os.path.join(cache_dir, "fusion_enthalpies.json")
 melt_enthalpies = json.load(open(fusion_enthalpies_file)) if os.path.exists(fusion_enthalpies_file) else {}
-
-fusion_temps_file = os.path.join(cache_dir, "fusion_temperatures.json")
 melt_temps = json.load(open(fusion_temps_file)) if os.path.exists(fusion_temps_file) else {}
-
-vaporization_temps_file = os.path.join(cache_dir, "vaporization_temperatures.json")
 boiling_temps = json.load(open(vaporization_temps_file)) if os.path.exists(vaporization_temps_file) else {}
 
+missing_files = []
+if not melt_enthalpies:
+    missing_files.append("fusion_enthalpies.json")
+if not melt_temps:
+    missing_files.append("fusion_temperatures.json")
+if not boiling_temps:
+    missing_files.append("vaporization_temperatures.json")
+if missing_files:
+    # Get the last two directories in the data_dir path
+    data_dir_parts = os.path.normpath(data_dir).split(os.sep)
+    last_two_dirs = os.sep.join(data_dir_parts[-2:]) if len(data_dir_parts) >= 2 else data_dir
+    raise FileNotFoundError(
+        f"The following data files were not loaded correctly: {', '.join(missing_files)}. "
+        f"Please ensure the files exist in the data directory '...{os.sep}{last_two_dirs}'."
+    )
 
-def validate_and_format_binary_system(input) -> tuple[list[str], str]:
+def validate_and_format_binary_system(input) -> tuple[list[str], str, bool]:
     """
     Args:
         input (str or list): System specification (e.g., 'A-B' or ['A', 'B']).
     
     Returns:
-        tuple[list[str], str]: Alphabetized list of components and hyphenated string continaing system information
+        tuple[list[str], str, bool]: Alphabetized list of components and hyphenated string continaing system information
         """
     if isinstance(input, str) and input.count('-') == 1:
-        components = sorted(input.split('-'))
+        components = input.split('-')
+        components_sorted = sorted(components)
     elif isinstance(input, list) and all(isinstance(c, str) for c in input) and len(input) == 2:
-        components = sorted(input)
+        components = input
+        components_sorted = sorted(input)
     else:
         raise ValueError("Input must be a hyphenated string or list of two components.")
 
-    # Validate components as elemental symbols
+    # Validate components as valid composition objects
     [Composition(c) for c in components]
-    return components, '-'.join(components)
+    return components, '-'.join(components), components_sorted != components
 
 
 def shape_to_list(svgpath: str) -> list[list]:
@@ -59,7 +70,7 @@ def shape_to_list(svgpath: str) -> list[list]:
     return [[float(p.split(',')[0]) / 100, float(p.split(',')[1]) + 273.15] for p in pairs]
 
 
-def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
+def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool]:
     """Extracts digitized liquidus data from MPDS JSON.
     
     Args:
@@ -68,14 +79,15 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
     Returns:
         list[list]: Digitized liquidus curve that is properly formatted for fitting purposes.
     """
+    is_partial = False
     if mpds_json.get('reference') is None:
         print("No data in MPDS JSON.")
-        return None
+        return None, False
 
     data = next((b['svgpath'] for b in mpds_json['shapes'] if b.get('label') == 'L'), "")
     if not data:
         print("No liquidus data found.")
-        return None
+        return None, False
 
     liquidus = shape_to_list(data)
 
@@ -86,7 +98,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
 
     if len(liquidus) < 3:
         print("Insufficient liquidus data.")
-        return None
+        return None, True
 
     def section_liquidus(points):
         """Splits liquidus into continuous sections."""
@@ -139,7 +151,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
     if main_section[0][0] > 0.03 or main_section[-1][0] < 0.97:
         print(f"MPDS liquidus does not span the entire composition range! "
               f"({100 * main_section[0][0]}-{100 * main_section[-1][0]})")
-        return None
+        is_partial = True
 
     mpds_liquidus = sorted(main_section)
 
@@ -165,7 +177,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> list[list] | None:
                 abs(1 - mpds_liquidus[i + 1][1] / mpds_liquidus[i][1]) < 0.0005:
             del (mpds_liquidus[i + 1])
 
-    return mpds_liquidus
+    return mpds_liquidus, is_partial
 
 
 def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
@@ -180,7 +192,7 @@ def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
         digitized liquidus curve that is properly formatted for fitting purposes. Note that the MPDS json in the
         specified cache directory must follow the alphabetized, hyphenated naming convention (e.g. 'A-B.json')
     """
-    components, system = validate_and_format_binary_system(input)
+    components, system, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
     component_data = {
         comp: [melt_enthalpies.get(comp, 0), melt_temps.get(comp, 0), boiling_temps.get(comp, 0)]
         for comp in components
@@ -190,7 +202,7 @@ def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
         for comp, data in component_data.items():
             print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
 
-    sys_file = os.path.join(cache_dir, f"{system}.json")
+    sys_file = os.path.join(data_dir, f"{system}.json")
     if os.path.exists(sys_file):
         with open(sys_file, 'r') as f:
             mpds_json = json.load(f)
@@ -265,7 +277,7 @@ def get_low_temp_phase_data(
     max_phase_temp = 0
 
     identified_phases = identify_mpds_phases(mpds_json)
-    mpds_liquidus = extract_digitized_liquidus(mpds_json)
+    mpds_liquidus, is_partial = extract_digitized_liquidus(mpds_json)
 
     def phase_decomp_on_liq(phase, liq):
         """Determines if a solid phase decomposes on or near the liquidus."""
@@ -373,7 +385,7 @@ def get_dft_convexhull(input, dft_type='GGA/GGA+U',
     Returns:
         A tuple of the phase diagram and a dictionary of stable entry atomic volumes.
     """
-    components, sys_name = validate_and_format_binary_system(input)
+    components, sys_name, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
 
     supported_dft_types = ["GGA/GGA+U", "R2SCAN", "GGA/GGA+U/R2SCAN"]
     if dft_type not in supported_dft_types:
@@ -388,7 +400,7 @@ def get_dft_convexhull(input, dft_type='GGA/GGA+U',
         print(f"Using DFT entries solved with {dft_type} functionals.")
 
     dft_entries_file = os.path.join(
-        cache_dir, f"{sys_name}_ENTRIES_MP_{'_'.join(dft_type.split('/'))}.json"
+        data_dir, f"{sys_name}_ENTRIES_MP_{'_'.join(dft_type.split('/'))}.json"
     )
     use_compound_pd = any(len(Composition(c).elements) > 1 for c in components)
 

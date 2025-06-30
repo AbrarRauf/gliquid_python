@@ -1,6 +1,6 @@
 """
 Authors: Abrar Rauf, Joshua Willwerth
-Last Modified: January 31, 2025
+Last Modified: June 30, 2025
 Description: This script takes the phase energy data in the form of enthalpy (H), entropy (S) and composition (X)
 and performs transformations to composition-temperature (TX) phase diagrams with well-defined coexistence boundaries
 GitHub: https://github.com/AbrarRauf
@@ -76,7 +76,7 @@ class HSX:
         fict_points = np.vstack((fict_coords, liq_fict_coords))
         new_points = np.vstack((self.points, fict_points))
         # Compute convex hull
-        new_hull = ConvexHull(new_points, qhull_options="Qt QJ i")
+        new_hull = ConvexHull(new_points, qhull_options="Qt i")
         
         def check_common_rows(arr1: np.ndarray, arr2: np.ndarray) -> bool:
             """Checks if any row in arr1 exists in arr2."""
@@ -86,8 +86,6 @@ class HSX:
         lower_hull_filter1 = [s for s in new_hull.simplices if not check_common_rows(new_points[s], fict_points)]
         lower_hull_filter2 = [s for s in lower_hull_filter1 
                               if sum((v == im).all() for v in self.points[s] for im in self.inter_points) < 3]
-        # sorted_lower_hull_filter2 = sorted(lower_hull_filter2, key=lambda x: (self.points[x[2]][1]*self.points[x[2]][2]))
-        # self.simplices = np.array(sorted_lower_hull_filter2)
         self.simplices = np.array(lower_hull_filter2)
         return self.simplices
 
@@ -115,10 +113,6 @@ class HSX:
         ]
         
         self.df_tx = pd.DataFrame(data, columns=['x', 't', 'label', 'color'])
-        # Create a scatter plot using Plotly
-        # fig = go.Figure(data=go.Scatter(x=self.df_tx['x'], y=self.df_tx['t'], mode='markers', marker=dict(color=self.df_tx['color'])))
-        # fig.update_layout(title='scatterplot', xaxis_title='X', yaxis_title='T', width=960, height=700, plot_bgcolor='white', yaxis=dict(range=[self.conds[0], self.conds[1]]))
-        # fig.show()
         phase_remap = defaultdict(list)
         for entry in data:
             phase_remap[entry[2]].append([entry[0], entry[1]])

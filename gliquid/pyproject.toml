@@ -3,8 +3,8 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "GLiquid"
-version = "2025.0.1"
+name = "gliquid"
+version = "2025.06.30"
 dependencies = [
     "plotly>=5.18.0,<6.0.0",
     "nbformat>=4.2.0",
@@ -14,8 +14,8 @@ dependencies = [
 requires-python = ">=3.10,<3.13"
 authors = [
     {name = "Joshua Willwerth", email = "willwerj@umich.edu"},
-    {name = "Shibo Tan", email = "shibot@umich.edu"},
     {name = "Abrar Rauf", email = "arauf@umich.edu"},
+    {name = "Shibo Tan", email = "shibot@umich.edu"},
     {name = "Wenhao Sun", email = "whsun@umich.edu"}
 ]
 maintainers = [
