@@ -31,7 +31,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this 
 from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2
 
 # mpr = MPRester(MAPI_KEY)
-mpr = MPRester("YOUR API KEY HERE")  # Use environment variable for MP_API_KEY
+mpr = MPRester("Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ")  # Use environment variable for MP_API_KEY
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
@@ -214,10 +214,10 @@ def generate_comp_grid(delta=0.025, atol=1e-6):
 
 
 class ternary_interpolation:
-    def __init__(self, tern_sys: List[str], dir: str, **kwargs):
+    def __init__(self, tern_sys: List[str], direct: str, **kwargs):
         self.tern_sys = sorted(tern_sys)
         self.binary_sys = ordered_binary_systems(self.tern_sys)
-        self.dir = dir # moving forward, I will store all relevant paths in the gliquid/config.py file. Also shouldn't use a builtin name for a variable
+        self.direct= direct# moving forward, I will store all relevant paths in the gliquid/config.py file. Also shouldn't use a builtin name for a variable
         
         self.delta = kwargs.get('delta', 0.025)  # default to 0.025
         self.tern_comp = generate_comp_grid(self.delta)
@@ -280,10 +280,10 @@ class ternary_interpolation:
         S_A, S_B, S_C = self.ref_data['S']
 
         if not all(sys in self.L_dict.keys() for sys in self.binary_sys): # only do this if L_dict is not already populated
-            # df_fitted = pd.read_excel(os.path.join(self.dir, 'fitted_system_data_new.xlsx'))
-            df_fitted = pd.read_excel(os.path.join(self.dir, 'composite_fit_results-trimmed+carbides.xlsx'))
-            # df_fitted = pd.read_excel(os.path.join(self.dir, 'composite_fit_results.xlsx'))
-            df_predicted = pd.read_excel(os.path.join(self.dir, 'predicted_params_final.xlsx'))
+            # df_fitted = pd.read_excel(os.path.join(self.direct, 'fitted_system_data_new.xlsx'))
+            df_fitted = pd.read_excel(os.path.join(self.direct, 'composite_fit_results-trimmed+carbides.xlsx'))
+            # df_fitted = pd.read_excel(os.path.join(self.direct, 'composite_fit_results.xlsx'))
+            df_predicted = pd.read_excel(os.path.join(self.direct, 'predicted_params_final.xlsx'))
             self.bin_df = self.retrieve_system_parameters(1, df_fitted, df_predicted) # '1' used as an enum?
 
         if self.interp_type == 'linear':
@@ -345,7 +345,7 @@ class ternary_interpolation:
   
     def get_phasedia_entries(self, sys):
         # add a subdir to self.dir
-        dft_subdir = os.path.join(self.dir, 'ternary_dft_data')
+        dft_subdir = os.path.join(self.direct, 'ternary_dft_data')
         if not os.path.exists(dft_subdir):
             os.makedirs(dft_subdir)
 
@@ -475,13 +475,13 @@ class ternary_interpolation:
 
    
 class ternary_hsx_plotter(ternary_interpolation): 
-    def __init__(self, tern_sys: List[str], dir: str, **kwargs):
+    def __init__(self, tern_sys: List[str],direct: str, **kwargs):
         delta = kwargs.get('delta', 0.025)
         interp_type = kwargs.get('interp_type', 'linear')
         param_format = kwargs.get('param_format', 'linear')
         L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
         L_dict = kwargs.get('L_dict', {})  # binary interaction parameters
-        super().__init__(tern_sys, dir, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
+        super().__init__(tern_sys,direct, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
         self.temp_slider = kwargs.get('temp_slider', [0, 0])
 
     def init_sys(self):
@@ -688,13 +688,13 @@ class ternary_hsx_plotter(ternary_interpolation):
 
 
 class ternary_gtx_plotter(ternary_interpolation):
-    def __init__(self, tern_sys: List[str], dir: str, **kwargs):
+    def __init__(self, tern_sys: List[str],direct: str, **kwargs):
         delta = kwargs.get('delta', 0.025)
         interp_type = kwargs.get('interp_type', 'linear')
         param_format = kwargs.get('param_format', 'linear')
         L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
         L_dict = kwargs.get('L_dict', {})  # binary interaction parameters
-        super().__init__(tern_sys, dir, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
+        super().__init__(tern_sys,direct, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
         self.temp_slider = kwargs.get('temp_slider', [0, 0])  # temperature slider for the plot
         self.T_incr = kwargs.get('T_incr', 10)  # temperature increment for the grid
 

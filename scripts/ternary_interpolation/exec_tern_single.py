@@ -3,6 +3,7 @@ import plotly.offline as ploff
 from gliquid.config import data_dir
 import os
 
+dump_dir = "all_htmls/"
 
 def plot_BiCdSn_system():
     # Bi-Cd-Sn system
@@ -13,11 +14,11 @@ def plot_BiCdSn_system():
                      "Sn-Bi": [-1579, 8.06, 2295, -2.1]}
     
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format="linear",
-                                  L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=1, delta=0.01)
+                                  L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=10, delta=0.025)
     plotter.interpolate()
     plotter.process_data()
     tern_fig = plotter.plot_ternary()
-    ploff.plot(tern_fig, filename='BiCdSn_system.html', auto_open=True)
+    ploff.plot(tern_fig, filename=dump_dir + 'BiCdSn_system.html', auto_open=True)
 
 
 if __name__ == "__main__":
