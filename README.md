@@ -1,4 +1,4 @@
-# <img src="images/logo.png" width="300" height="300"> 
+# <img src="figures/logo.png" width="300" height="300"> 
 # GLiquid: DFT-Referenced Thermodynamic Modeling
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -16,7 +16,7 @@ Open your terminal and clone the repository to the folder where you want to stor
 done through downloading the zip file and unpacking it to your local directory
 ```bash
 cd "some_local_directory"
-git clone https://github.com/willwerj/GLiquid.git
+git clone https://github.com/willwerj/gliquid_python.git
 ```
 
 ### **2. Create an Environment**
@@ -40,16 +40,11 @@ gliquid-env\Scripts\Activate.ps1
 ```                       
                                                           
 ### **3. Install Dependencies**
-Then, install the dependencies listed in [requirements.txt](requirements.txt). 
+Then, install the gliquid dependencies. For now, this is done locally 
 ```bash
 # Pip package installation
-pip install -r requirements.txt
+pip install .
 ```
-All package installations are supported by `pip`, but can also be done using `conda` instead
-```bash
-# Conda-forge package installation                         
-conda install -c conda-forge --file requirements.txt
-```                             
 
 ### **4. Get your API Key**
 Visit the [Materials Project Website](https://next-gen.materialsproject.org/api) and create an account if you don't

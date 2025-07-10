@@ -2,7 +2,7 @@ import os
 from matplotlib import pyplot as plt
 import plotly.offline as ploff
 from gliquid.config import data_dir
-from gliquid.gliquid_binary import BinaryLiquid, BLPlotter
+from gliquid.binary import BinaryLiquid, BLPlotter
 from ternary_interpolation.ternary_HSX import ternary_gtx_plotter
 
 
@@ -122,7 +122,7 @@ def plot_CGaFe_system():
     plotter.hsx_df = plotter.hsx_df._append(ga4fe3_phase, ignore_index=True)
     plotter.process_data()
     tern_fig = plotter.plot_ternary()
-    ploff.plot(tern_fig, filename='CFeGa_system.html', auto_open=True)
+    ploff.plot(tern_fig, filename='./figures/CFeGa_system.html', auto_open=True)
 
 
 if __name__ == "__main__":

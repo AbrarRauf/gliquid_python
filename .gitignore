@@ -1,0 +1,4 @@
+notebooks/data/
+gliquid.egg-info/
+build/
+scripts/ternary_interpolation/__pycache__/

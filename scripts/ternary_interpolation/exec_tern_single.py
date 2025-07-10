@@ -6,7 +6,7 @@ import os
 
 def plot_BiCdSn_system():
     # Bi-Cd-Sn system
-    os.environ["NEW_MP_API_KEY"] = "YOUR API KEY HERE"
+    os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_sys = ["Bi", "Cd", "Sn"]
     binary_L_dict = {"Bi-Cd": [-685, 4.41, 837, -2.96],
                      "Cd-Sn": [10649, -10.13, -7219, 15.72],
