@@ -3,7 +3,7 @@ import plotly.offline as ploff
 from gliquid.config import data_dir
 import os
 
-dump_dir = "all_htmls/"
+dump_dir = "all_dumps/"
 
 def plot_BiCdSn_system():
     # Bi-Cd-Sn system

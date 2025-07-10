@@ -3,4 +3,4 @@ gliquid.egg-info/
 build/
 scripts/ternary_interpolation/__pycache__/
 data/
-all_htmls/
+all_dumps/
