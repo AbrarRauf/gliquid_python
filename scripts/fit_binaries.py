@@ -13,7 +13,7 @@ def main():
     # param_format = 'linear'   
     param_format = 'whs'   
 
-    binary = ['Zr', 'Ga']
+    binary = ['Zr', 'Te']
     
     binary_sys_name = ("-").join(sorted(binary))
 

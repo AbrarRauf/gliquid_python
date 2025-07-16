@@ -20,6 +20,7 @@ from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay
+from copy import deepcopy
 # from auth import key as MAPI_KEY
 
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
@@ -216,6 +217,7 @@ def generate_comp_grid(delta=0.025, atol=1e-6):
 class ternary_interpolation:
     def __init__(self, tern_sys: List[str], direct: str, **kwargs):
         self.tern_sys = sorted(tern_sys)
+        print("initializing for: ", self.tern_sys)
         self.binary_sys = ordered_binary_systems(self.tern_sys)
         self.direct= direct# moving forward, I will store all relevant paths in the gliquid/config.py file. Also shouldn't use a builtin name for a variable
         
@@ -340,6 +342,7 @@ class ternary_interpolation:
         H = np.where(np.isfinite(h_vals_mesh), h_vals_mesh, 0).flatten()
         S = np.where(np.isfinite(s_vals_mesh), s_vals_mesh, 0).flatten()
 
+        print(f"Composition map: x0: {self.tern_sys[1]}, x1: {self.tern_sys[2]}")
         self.hsx_df = pd.DataFrame({'x0': x_B, 'x1': x_C, 'S': S, 'H': H})
         self.hsx_df['Phase Name'] = 'L'
   
@@ -730,6 +733,7 @@ class ternary_gtx_plotter(ternary_interpolation):
         self.init_sys()
         start_time = time.time()
         self.equil_df_list = []
+        shifter = 0
         for T in self.T_grid:       
             if T < self.conds[0]:
                 continue  
@@ -749,12 +753,13 @@ class ternary_gtx_plotter(ternary_interpolation):
                 final_phases.append(phase_arr)
 
             data = []
+            last_val = 0
             for i, simplex in enumerate(simplices):
                 labels = final_phases[i]
                 if len(set(labels)) == 0:
                     continue
                 else:
-                    x0_coords = [points[vertex][0] for vertex in simplex] 
+                    x0_coords = [points[vertex][0] for vertex in simplex]
                     x1_coords = [points[vertex][1] for vertex in simplex]
                     t_val = T
 
@@ -762,10 +767,15 @@ class ternary_gtx_plotter(ternary_interpolation):
                 for x0, x1 in zip(x0_coords, x1_coords):
                     label = labels[j]
                     color = self.color_map[label]
-                    data.append([x0, x1, t_val, label, color])
+                    data.append([x0, x1, t_val, label, color, shifter + i])
                     j += 1
 
-            temp_df = pd.DataFrame(data, columns=['x0', 'x1', 'T', 'Phase', 'Colors'])
+                last_val = i
+
+            shifter += (last_val + 1)
+
+
+            temp_df = pd.DataFrame(data, columns=['x0', 'x1', 'T', 'Phase', 'Colors', 'simplex_id'])
 
             temp_df = cartesian_to_ternary(temp_df)
             temp_df['T'] = temp_df['T'] - 273.15
@@ -779,9 +789,58 @@ class ternary_gtx_plotter(ternary_interpolation):
         fig = go.Figure()
 
         self.plotting_df = pd.concat(self.equil_df_list)
+        simplex_df = deepcopy(self.plotting_df)
+
+        liq_simplex_df = simplex_df[simplex_df['Phase'] == 'L']
+        solid_simplex_df = simplex_df[simplex_df['Phase'] != 'L']
+        liq_simplex_df = liq_simplex_df.sort_values('T').drop_duplicates(subset=['x0', 'x1'], keep='first')
+        simplex_df = pd.concat([solid_simplex_df, liq_simplex_df])
+        
+        id_counts = simplex_df["simplex_id"].value_counts()
+        valid_ids = id_counts[id_counts == 3].index
+        simplex_df = simplex_df[simplex_df['simplex_id'].isin(valid_ids)].copy()
+        simplex_df = simplex_df.sort_values(by='simplex_id').reset_index(drop=True)
+
         self.liq_plotting_df = self.plotting_df[self.plotting_df['Phase'] == 'L']
         self.solid_plotting_df = self.plotting_df[self.plotting_df['Phase'] != 'L']
         self.solid_plotting_df = self.solid_plotting_df.sort_values('T').drop_duplicates(subset=['x0', 'x1'], keep='last')
+        solids = set(self.solid_plotting_df["Phase"].tolist())
+        solids = [str(x) for x in solids]
+        solids.remove("ZrTe")
+
+        # simplex_df = simplex_df[(simplex_df["T"] >= 50) & (simplex_df["T"] <= 300)]
+
+        for i in range(0, len(simplex_df), 3):
+            tri = simplex_df.iloc[i:i+3]
+
+            x = tri["x0"].tolist()
+            y = tri["x1"].tolist()
+            z = tri["T"].tolist()
+            tri_phases = tri["Phase"].tolist()
+
+            if "ZrTe" not in tri_phases:
+                continue
+
+            # if "L" not in tri_phases:
+            #     continue
+
+            if len(set(tri_phases)) == 1:
+                continue
+
+            # if len(set(tri_phases)) == 1:
+            #     continue
+
+            x += [x[0]]
+            y += [y[0]]
+            z += [z[0]]
+
+            fig.add_trace(go.Scatter3d(
+                x=x, y=y, z=z, 
+                mode = "lines", 
+                line = dict(color="gray", width = 2.0),
+                showlegend = False,
+            ))
+                
 
         for index, row in self.solid_plotting_df.iterrows():
             x0 = row['x0']
@@ -818,6 +877,7 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         self.plotting_df = pd.concat([self.solid_plotting_df, self.liq_plotting_df])
 
+
         # trace = go.Scatter3d(
         #     x = self.liq_plotting_df['x0'], y = self.liq_plotting_df['x1'], z = self.liq_plotting_df['T'],
         #     mode = 'markers', marker = dict(size = 5, color = self.liq_plotting_df['Colors']),
@@ -835,7 +895,7 @@ class ternary_gtx_plotter(ternary_interpolation):
         fig.add_trace(go.Mesh3d(
             x = self.liq_plotting_df['x0'], y = self.liq_plotting_df['x1'], z = self.liq_plotting_df['T'],
             i = triangles[:, 0], j = triangles[:, 1], k = triangles[:, 2],
-            opacity = 0.7, colorscale = 'Viridis', intensity = self.liq_plotting_df['T'],
+            opacity = 0.6, colorscale = 'Viridis', intensity = self.liq_plotting_df['T'],
             showscale = False,
         ))
 

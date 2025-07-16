@@ -22,7 +22,7 @@ def gen_hsx_lowerhull(points):
     # determine the dimensionality of the points
     dim = points.shape[1]
 
-    # initialize bounds for Xi 
+    # initialize bounds for Xi
     x_list = []
     for i in range(dim-1):
         sublist = []
