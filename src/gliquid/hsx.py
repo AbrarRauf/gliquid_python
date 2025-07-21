@@ -62,7 +62,7 @@ class HSX:
         # Compute S and H bounds
         s_min, s_extr = np.min(self.points[:, -2]), np.max([self.liq_points[0, -2], self.liq_points[-1, -2]])
         h_max = np.max(self.points[:, -1])
-        upper_bound = 4 * h_max
+        upper_bound = 10 * h_max
 
         # Generate fictitious points
         liq_fict_coords = np.column_stack((self.liq_points[:, 0], self.liq_points[:, 1],
@@ -77,6 +77,7 @@ class HSX:
         new_points = np.vstack((self.points, fict_points))
         # Compute convex hull
         new_hull = ConvexHull(new_points, qhull_options="Qt i")
+        # new_hull = ConvexHull(new_points)
         
         def check_common_rows(arr1: np.ndarray, arr2: np.ndarray) -> bool:
             """Checks if any row in arr1 exists in arr2."""
@@ -344,13 +345,13 @@ class HSX:
                 self.conds[1] += 0.1 * trange
             else:
                 self.conds[1] = lhs_tm + yfactor * trange
-            legend = {'yanchor': 'top', 'y': 0.99, 'xanchor': 'left', 'x': 0.01, 'font': dict(size=18)}
+            legend = {'yanchor': 'top', 'y': 0.99, 'xanchor': 'left', 'x': 0.01, 'font': dict(size=15)}
         else:
             if rhs_tm + 0.3 * trange < self.conds[1]:  # higest temp at least 30% of range above lower tm
                 self.conds[1] += 0.1 * trange
             else:
                 self.conds[1] = rhs_tm + yfactor * trange
-            legend = {'yanchor': 'top', 'y': 0.99, 'xanchor': 'right', 'x': 0.99, 'font': dict(size=18)}
+            legend = {'yanchor': 'top', 'y': 0.99, 'xanchor': 'right', 'x': 0.99, 'font': dict(size=15)}
 
         fig = go.Figure()
         if digitized_liquidus:
@@ -397,10 +398,7 @@ class HSX:
                 showarrow=False,
                 textangle=-90,
                 borderpad=5,
-                font=dict(
-                    size=18,
-                    color='black'
-                )
+                font=dict(size=12, color='black')
             )
             idx_tracker += 1
 
@@ -435,32 +433,37 @@ class HSX:
                                      mode='lines', line=dict(color='#FFAE43', dash='dash'),
                                      name='Gas Phase Forms', showlegend=True))
         fig.update_layout(
-            title=f"{self.comps[0]}-{self.comps[1]} DFT-Referenced Binary Phase Diagram",
-            xaxis=dict(range=[0, 100], title=f'{self.comps[1]} (at. %)'),
-            yaxis=dict(range=[max(self.conds[0], -273), self.conds[1]], title='T (°C)', ticksuffix=" "),
-            width=960,
-            height=700,
+            title=dict(text=f'<b>{self.comps[0]}-{self.comps[1]} DFT-Referenced Phase Diagram</b>',
+                       x=0.5, xanchor='center', font=dict(size=18, color='black')),
+            xaxis=dict(range=[0, 100], title='Composition (at. %)'),
+            yaxis=dict(range=[max(self.conds[0], -273), self.conds[1]], title='Temperature (°C)', ticksuffix=" "),
+            width=750, # 960 for show()
+            height=600, # 700 for show()
             plot_bgcolor='white',
-            font_size=22,
+            font=dict(size=13, color='black'),
             showlegend=True,
             legend=legend
         )
-        fig.update_xaxes(
-            mirror=True,
-            ticks="outside",
-            showline=True,
+        axes_params_dict = dict(
+            title_font=dict(size=13),
+            title_standoff=8,  # Space between title and axis line
+            mirror=True,        # Draws lines on all four sides
+            showline=True,      # Shows the primary axis lines (bottom, left)
             linecolor='black',
-            linewidth=2,
+            linewidth=1.5,
+            ticks="outside",    # Places ticks outside the plot area, starting at the axis line
             tickcolor='black',
-            tickformat=".0f"
+            ticklen=5,
+            tickwidth=1,
+            minor_ticks="outside", # Places minor ticks outside
+            minor=dict(tickcolor='black', ticklen=2, tickwidth=1, nticks=5)
+        )
+        fig.update_xaxes(
+            tickformat=".0f",
+            **axes_params_dict
         )
         fig.update_yaxes(
-            mirror=True,
-            ticks="outside",
-            showline=True,
-            linecolor='black',
-            linewidth=2,
-            tickcolor='black'
+            **axes_params_dict
         )
         fig.add_annotation(
             x=50,
@@ -468,9 +471,31 @@ class HSX:
             text='L',
             showarrow=False,
             font=dict(
-                size=18,
+                size=14,
                 color='black'
             )
+        )
+        fig.add_annotation(
+            x=-0.05,
+            y=-0.10,  # Position below the x-axis in paper coordinates
+            xref="paper",
+            yref="paper",
+            text=self.comps[0], # Use the component name from the data
+            showarrow=False,
+            font=dict(color="black", size=13),
+            xanchor='left',
+            yanchor='middle'
+        )
+        fig.add_annotation(
+            x=1.05,
+            y=-0.10, # Position below the x-axis in paper coordinates
+            xref="paper",
+            yref="paper",
+            text=self.comps[1], # Use the component name from the data
+            showarrow=False,
+            font=dict(color="black", size=13),
+            xanchor='right',
+            yanchor='middle'
         )
 
         return fig

@@ -31,7 +31,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this 
 from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2
 
 # mpr = MPRester(MAPI_KEY)
-mpr = MPRester("YOUR API KEY HERE")  # Use environment variable for MP_API_KEY
+mpr = MPRester("YOUR_API_KEY_HERE")  # Use environment variable for MP_API_KEY
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
@@ -305,9 +305,8 @@ class ternary_interpolation:
             l_expr = _L_LINEAR_EXPR
         elif self.param_format == 'exponential':
             l_expr = _L_EXP_EXPR
-        elif self.param_format in ['combined', 'whs']:
+        elif self.param_format in ['combined', 'combined_no_1S']:
             l_expr = _L_LIN_EXP_EXPR
-
 
         L_array = np.array([self.L_dict[sys] for sys in self.binary_sys]) # 3 x 4 array in order of binary systems
         symbolic_expressions = build_ternary_thermodynamic_expressions(
