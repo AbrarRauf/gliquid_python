@@ -30,6 +30,7 @@ from gliquid.binary import (
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
 from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2
+import random
 
 # mpr = MPRester(MAPI_KEY)
 mpr = MPRester("Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ")  # Use environment variable for MP_API_KEY
@@ -493,7 +494,10 @@ class ternary_hsx_plotter(ternary_interpolation):
 
         solid_phases = self.phases.copy()
         solid_phases.remove('L')
-        color_array = px.colors.qualitative.Dark24
+        # Generate a random color array with at least 100 options
+        def random_color():
+            return f"#{random.randint(0, 0xFFFFFF):06x}"
+        color_array = [random_color() for _ in range(100)]
         self.color_map = dict(zip(solid_phases, color_array))
         self.color_map['L'] = 'cornflowerblue'
 
@@ -707,7 +711,10 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         solid_phases = self.phases.copy()
         solid_phases.remove('L')
-        color_array = px.colors.qualitative.Dark24
+        # Generate a random color array with at least 100 options
+        def random_color():
+            return f"#{random.randint(0, 0xFFFFFF):06x}"
+        color_array = [random_color() for _ in range(100)]
         self.color_map = dict(zip(solid_phases, color_array))
         self.color_map['L'] = 'cornflowerblue'
 
@@ -810,36 +817,37 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         # simplex_df = simplex_df[(simplex_df["T"] >= 50) & (simplex_df["T"] <= 300)]
 
-        for i in range(0, len(simplex_df), 3):
-            tri = simplex_df.iloc[i:i+3]
+        # Code for manually adding simplex meshes
+        # for i in range(0, len(simplex_df), 3):
+        #     tri = simplex_df.iloc[i:i+3]
 
-            x = tri["x0"].tolist()
-            y = tri["x1"].tolist()
-            z = tri["T"].tolist()
-            tri_phases = tri["Phase"].tolist()
+        #     x = tri["x0"].tolist()
+        #     y = tri["x1"].tolist()
+        #     z = tri["T"].tolist()
+        #     tri_phases = tri["Phase"].tolist()
 
-            if "ZrTe" not in tri_phases:
-                continue
+        #     # if ("ZrTe" not in tri_phases) or ("ZrTe2" not in tri_phases):
+        #     #     continue
 
-            # if "L" not in tri_phases:
-            #     continue
+        #     if "L" not in tri_phases:
+        #         continue
 
-            if len(set(tri_phases)) == 1:
-                continue
+        #     if len(set(tri_phases)) == 1:
+        #         continue
 
-            # if len(set(tri_phases)) == 1:
-            #     continue
+        #     # if len(set(tri_phases)) == 1:
+        #     #     continue
 
-            x += [x[0]]
-            y += [y[0]]
-            z += [z[0]]
+        #     x += [x[0]]
+        #     y += [y[0]]
+        #     z += [z[0]]
 
-            fig.add_trace(go.Scatter3d(
-                x=x, y=y, z=z, 
-                mode = "lines", 
-                line = dict(color="gray", width = 2.0),
-                showlegend = False,
-            ))
+        #     fig.add_trace(go.Scatter3d(
+        #         x=x, y=y, z=z, 
+        #         mode = "lines", 
+        #         line = dict(color="gray", width = 2.0),
+        #         showlegend = False,
+        #     ))
                 
 
         for index, row in self.solid_plotting_df.iterrows():

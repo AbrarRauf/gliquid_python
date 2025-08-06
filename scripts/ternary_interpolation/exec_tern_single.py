@@ -46,7 +46,7 @@ def plot_ternary_system():
     print(binary_L_dict)
     
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=5, delta=0.01)
+                                  L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=5, delta=0.025)
     plotter.interpolate()
     plotter.process_data()
     tern_fig = plotter.plot_ternary()
