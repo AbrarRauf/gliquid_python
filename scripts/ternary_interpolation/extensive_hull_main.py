@@ -560,6 +560,18 @@ def gen_hyperplane_eqns2(points, lower_hull=[], direct_vertices=False, multiplie
     return all_hyperplane_eqns, all_partial_derivatives
 
 
+def direct_lowerhull(points):
+    hull = ConvexHull(points)
+    lowerhull = []
+    for eq, simplex in zip(hull.equations, hull.simplices):
+        normal = eq[:-1]
+        if normal[-1] > 0: 
+            lowerhull.append(simplex)
+    
+    return lowerhull
+
+
+
 def gliq_lowerhull(points, liq_points, intermetallics):
     # Function to calculate the general lower convex hull of an N-dimensional Xi-S-H space
     # Input: points = array of coordinates of the points in the Xi-S-H space

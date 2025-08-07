@@ -29,7 +29,7 @@ from gliquid.binary import (
     linear_expr, exponential_expr, combined_expr)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
-from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2
+from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2, direct_lowerhull
 import random
 
 # mpr = MPRester(MAPI_KEY)
@@ -146,6 +146,7 @@ def cartesian_to_ternary(df):
     df.iloc[:, 1] = new_ys
 
     return df
+
 
 def ternary_to_cartesian(x_A, x_B):
     x = x_A + 0.5 * x_B
@@ -516,6 +517,7 @@ class ternary_hsx_plotter(ternary_interpolation):
         start_time = time.time()
         self.points = np.array(self.hsx_df[['x0', 'x1', 'S', 'H']])
         self.simplices = gliq_lowerhull3(self.points, vertical_simplices=True)
+        # self.simplices = direct_lowerhull(self.points)
         self.temps = gen_hyperplane_eqns2(points = self.points, lower_hull = self.simplices, partial_indices = [2])[1]
         nan_indices = []
         for i in range(len(self.temps)):
@@ -813,7 +815,6 @@ class ternary_gtx_plotter(ternary_interpolation):
         self.solid_plotting_df = self.solid_plotting_df.sort_values('T').drop_duplicates(subset=['x0', 'x1'], keep='last')
         solids = set(self.solid_plotting_df["Phase"].tolist())
         solids = [str(x) for x in solids]
-        solids.remove("ZrTe")
 
         # simplex_df = simplex_df[(simplex_df["T"] >= 50) & (simplex_df["T"] <= 300)]
 
