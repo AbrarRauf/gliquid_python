@@ -102,16 +102,16 @@ def main():
             print(f"Error in system {tern_sys} with index {i}: {e}")
             continue
 
-        print(congruent_temps)
-        print(types)
-        print(valid_idx)
+    print(congruent_temps)
+    print(types)
+    print(valid_idx)
 
-        new_df = ternary_df.iloc[valid_idx]
-        new_df["gliq_melting_temp"] = congruent_temps
-        new_df["type"] = types
-        print(new_df)
+    new_df = ternary_df.iloc[valid_idx]
+    new_df["gliq_melting_temp"] = congruent_temps
+    new_df["type"] = types
+    print(new_df)
 
-        new_df.to_excel(os.path.join(dump_dir, "ternary_Gliq_mps.xlsx"), index=False)
+    new_df.to_excel(os.path.join(dump_dir, "ternary_Gliq_mps.xlsx"), index=False)
             
 
 
