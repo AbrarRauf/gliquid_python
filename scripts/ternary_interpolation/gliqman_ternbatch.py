@@ -94,7 +94,7 @@ def main():
             else:
                 types.append("non-congruent")
             tern_fig = plotter.plot_ternary()
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_system.html', auto_open=False)
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}_system.html', auto_open=False)
             valid_idx.append(i)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
 
