@@ -292,18 +292,8 @@ class ternary_interpolation:
 
         if self.interp_type == 'linear':
             wAB, wBC, wCA = 1, 1, 1
-        elif self.interp_type == 'muggianu':
-            wAB = 4*x_A*x_B/(1-(x_A - x_B)**2)
-            wBC = 4*x_B*x_C/(1-(x_B - x_C)**2)
-            wCA = 4*x_C*x_A/(1-(x_C - x_A)**2) 
-        elif self.interp_type == 'kohler':
-            wAB = (x_A + x_B)**2
-            wBC = (x_B + x_C)**2
-            wCA = (x_C + x_A)**2
-        elif self.interp_type == 'luck_chou':
-            wAB = x_B/(1-x_A)
-            wBC = x_C/(1-x_B) 
-            wCA = x_A/(1-x_C)
+        else:
+            raise Exception("Only linear interpolation for binary params is currently supported")
 
         if self.param_format == 'linear':
             l_expr = _L_LINEAR_EXPR
