@@ -1,6 +1,6 @@
 """
 Author: Joshua Willwerth
-Last Modified: June 30, 2025
+Last Modified: August 4, 2025
 Description: This script provides functions to interface with the Materials Project (MP) APIs and locally cache DFT
 calculated phase data. Publicly-availble data from the Materials Platform for Data Science (MPDS) may be downloaded and
 processed using this script in order to autopopulate BinaryLiquid objects using the `from_cache` method.
@@ -15,16 +15,17 @@ import numpy as np
 
 from emmet.core.thermo import ThermoType
 from mp_api.client import MPRester as MPRester
+from mpds_client import MPDSDataRetrieval, MPDSDataTypes, APIError
 from pymatgen.core import Composition, Element, Structure
 from pymatgen.entries.computed_entries import ComputedEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
 from pymatgen.entries.mixing_scheme import MaterialsProjectDFTMixingScheme
-from sympy import comp
-from gliquid.config import data_dir, fusion_enthalpies_file, fusion_temps_file, vaporization_temps_file
+import shutil
+import gliquid.config as config
 
-melt_enthalpies = json.load(open(fusion_enthalpies_file)) if os.path.exists(fusion_enthalpies_file) else {}
-melt_temps = json.load(open(fusion_temps_file)) if os.path.exists(fusion_temps_file) else {}
-boiling_temps = json.load(open(vaporization_temps_file)) if os.path.exists(vaporization_temps_file) else {}
+melt_enthalpies = json.load(open(config.fusion_enthalpies_file)) if os.path.exists(config.fusion_enthalpies_file) else {}
+melt_temps = json.load(open(config.fusion_temps_file)) if os.path.exists(config.fusion_temps_file) else {}
+boiling_temps = json.load(open(config.vaporization_temps_file)) if os.path.exists(config.vaporization_temps_file) else {}
 
 missing_files = []
 if not melt_enthalpies:
@@ -35,8 +36,8 @@ if not boiling_temps:
     missing_files.append("vaporization_temperatures.json")
 if missing_files:
     # Get the last two directories in the data_dir path
-    data_dir_parts = os.path.normpath(data_dir).split(os.sep)
-    last_two_dirs = os.sep.join(data_dir_parts[-2:]) if len(data_dir_parts) >= 2 else data_dir
+    data_dir_parts = os.path.normpath(config.data_dir).split(os.sep)
+    last_two_dirs = os.sep.join(data_dir_parts[-2:]) if len(data_dir_parts) >= 2 else config.data_dir
     raise FileNotFoundError(
         f"The following data files were not loaded correctly: {', '.join(missing_files)}. "
         f"Please ensure the files exist in the data directory '...{os.sep}{last_two_dirs}'."
@@ -77,7 +78,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool
         mpds_json (dict): MPDS digitized phase equilibrium data for the system.
 
     Returns:
-        list[list]: Digitized liquidus curve that is properly formatted for fitting purposes.
+        tuple[list[list] | None, bool]: Digitized liquidus curve that is properly formatted for fitting purposes.
     """
     is_partial = False
     if mpds_json.get('reference') is None:
@@ -180,7 +181,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool
     return mpds_liquidus, is_partial
 
 
-def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
+def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, list[list] | None]:
     """Retrieves MPDS data for a binary system.
     
     Args:
@@ -192,26 +193,95 @@ def load_mpds_data(input, verbose=True) -> tuple[dict, dict, list[list] | None]:
         digitized liquidus curve that is properly formatted for fitting purposes. Note that the MPDS json in the
         specified cache directory must follow the alphabetized, hyphenated naming convention (e.g. 'A-B.json')
     """
-    components, system, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
+    components, sys_name, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
     component_data = {
         comp: [melt_enthalpies.get(comp, 0), melt_temps.get(comp, 0), boiling_temps.get(comp, 0)]
         for comp in components
     }
+    for comp, data in component_data.items():
+        print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
 
-    if verbose:
-        for comp, data in component_data.items():
-            print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
-
-    sys_file = os.path.join(data_dir, f"{system}.json")
-    if os.path.exists(sys_file):
+    if config.dir_structure == 'nested':
+        sys_dir = os.path.join(config.data_dir, sys_name)
+        os.makedirs(sys_dir, exist_ok=True)
+    elif config.dir_structure == 'flat':
+        sys_dir = config.data_dir
+    else:
+        raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
+    
+    if pd_ind is None:
+        sys_file = os.path.join(sys_dir, f"{sys_name}.json")
+    elif isinstance(pd_ind, int):
+        sys_file = os.path.join(sys_dir, f"{sys_name}_MPDS_PD_{pd_ind}.json")
+        if not os.path.exists(sys_file) and os.path.exists(os.path.join(sys_dir, f"{sys_name}_MPDS_PD_0.json")):
+            raise ValueError(f"No matching json with pd_ind={pd_ind} found in cache!")
+    else:
+        raise ValueError("Input for pd_ind must be an integer or 'None'!")
+    
+    if os.path.exists(sys_file): # Load from cache
         with open(sys_file, 'r') as f:
             mpds_json = json.load(f)
-        if verbose:
-            print("\nReading MPDS json from entry at " + mpds_json['reference']['entry'] + "...\n")
-    else:
-        if verbose:
-            print("\nNo cached phase data found; proceeding without it.")
+            if mpds_json.get('reference', None) is not None:
+                print("\nReading MPDS json from entry at " + mpds_json['reference']['entry'] + "...\n")
+    else: # Try API call
+        print("\nNo cached binary phase data found!")
+        mpds_api_key = os.getenv('MPDS_API_KEY')
         mpds_json = {"reference": None}
+        if not mpds_api_key:
+            print("MPDS_API_KEY not found in environment variables. Proceeding without binary phase data.")
+            return mpds_json, component_data, (None, False)
+        client = MPDSDataRetrieval(api_key=mpds_api_key)
+        client.dtype = MPDSDataTypes.PEER_REVIEWED
+        fields = {'C': ['chemical_elements', 'entry', 'comp_range', 'temp', 'labels', 'shapes', 'reference']}
+        valid_jsons = []
+        try:
+            diagrams = [d for d in 
+            client.get_data(search={'elements': sys_name, 'classes': 'binary'}, fields=fields) 
+            if d]
+            for d in diagrams:
+                dia_json = dict(zip(fields['C'], d))
+                if dia_json['comp_range'][1] - dia_json['comp_range'][0] > 10:
+                    if mpds_json['reference'] is None:
+                        mpds_json = dia_json
+                    elif (dia_json['comp_range'][1] - dia_json['comp_range'][0] >
+                          mpds_json['comp_range'][1] - mpds_json['comp_range'][0]):
+                        mpds_json = dia_json
+                if dia_json['comp_range'] != [0, 100]:
+                    continue
+                if extract_digitized_liquidus(dia_json)[0]:
+                    valid_jsons.append(dia_json)
+        except APIError:
+            print(" Got 0 hits")
+
+        if not valid_jsons:
+            valid_jsons = [mpds_json]
+
+        if pd_ind is None:
+            mpds_json = valid_jsons[0]
+            sys_file = os.path.join(sys_dir, f"{sys_name}.json")
+            with open(sys_file, "w") as f:
+                json.dump(mpds_json, f)
+            if mpds_json.get('reference', None) is None:
+                print(f"No valid phase diagrams found, caching default json")
+            else:
+                print(f"Caching binary phase data from entry at {dia_json['reference']['entry']} as {sys_file}...")
+        else:
+            for ind, dia_json in enumerate(valid_jsons):
+                sys_file = os.path.join(sys_dir, f"{sys_name}_MPDS_PD_{ind}.json")
+                with open(sys_file, "w") as f:
+                    json.dump(dia_json, f)
+                if dia_json.get('reference', None) is None:
+                    print(f"No valid phase diagrams found, caching default json")
+                    break
+                print(f"Caching binary phase data from entry at {dia_json['reference']['entry']} as {sys_file}...")
+            if isinstance(pd_ind, int):
+                if pd_ind < len(valid_jsons):
+                    mpds_json = valid_jsons[pd_ind]
+                else:
+                    (f"pd_ind={pd_ind} exceeds the number of valid jsons downloaded from API! Returning the first json")
+                    mpds_json = valid_jsons[0]
+            else:
+                raise ValueError("Input for pd_ind must be an integer or 'None'!")
 
     return mpds_json, component_data, extract_digitized_liquidus(mpds_json)
 
@@ -248,7 +318,7 @@ def identify_mpds_phases(mpds_json: dict, verbose=False) -> list[dict]:
                 cbounds = [data[0], data[-1]]
                 if cbounds[-1][0] < 0.03 or cbounds[0][0] > 0.97:
                     continue
-                phases.append({'type': 'ss', 'name': shape['label'].split()[0], 'comp': tbounds[1][0],
+                phases.append({'type': 'ss', 'name': shape['label'], 'comp': tbounds[1][0],
                                'cbounds': cbounds, 'tbounds': tbounds})
             else:  # Line compound
                 phases.append({'type': 'lc', 'name': shape['label'].split()[0], 'comp': tbounds[1][0],
@@ -273,11 +343,34 @@ def get_low_temp_phase_data(
         following format: (mpds congruently melting phases, mpds incongruently melting phases, max phase decomp temp),
         (dft phase formation energies, dft phase energies below convex hull, minimum phase formation energy)
         """
+    
+    dft_phases, dft_phases_ebelow = {}, {}
+    min_form_e = 0
+
+    for entry in dft_ch.stable_entries:
+        comp_dict = entry.composition.fractional_composition.as_dict()
+        if len(comp_dict) == 1:
+            continue
+
+        comp = comp_dict.get(dft_ch.elements[1].symbol, 0)
+        form_e = dft_ch.get_form_energy_per_atom(entry)
+        dft_phases[entry.name] = ((comp, comp), form_e)
+        min_form_e = min(form_e, min_form_e)
+
+        ch_copy = PhaseDiagram([e for e in dft_ch.stable_entries if e != entry])
+        e_below_hull = -abs(dft_ch.get_hull_energy_per_atom(entry.composition) -
+                            ch_copy.get_hull_energy_per_atom(entry.composition))
+        dft_phases_ebelow[entry.name] = ((comp, comp), e_below_hull)
+
     mpds_congruent_phases, mpds_incongruent_phases = {}, {}
     max_phase_temp = 0
 
     identified_phases = identify_mpds_phases(mpds_json)
-    mpds_liquidus, is_partial = extract_digitized_liquidus(mpds_json)
+    mpds_liquidus, _ = extract_digitized_liquidus(mpds_json)
+
+    if not identified_phases:
+        return ((mpds_congruent_phases, mpds_incongruent_phases, max_phase_temp), 
+                (dft_phases, dft_phases_ebelow, min_form_e))
 
     def phase_decomp_on_liq(phase, liq):
         """Determines if a solid phase decomposes on or near the liquidus."""
@@ -289,7 +382,7 @@ def get_low_temp_phase_data(
             # composition falls between two points:
             elif liq[i][0] < phase['tbounds'][1][0] < liq[i + 1][0]:
                 return abs((liq[i][1] + liq[i + 1][1]) / 2 - phase['tbounds'][1][1]) < 10
-
+            
     temp_range = mpds_json['temp'][1] - mpds_json['temp'][0]
     temp_threshold = (mpds_json['temp'][0] + 273.15) + temp_range * 0.10
 
@@ -313,25 +406,8 @@ def get_low_temp_phase_data(
     if max_phase_temp == 0 and mpds_liquidus:
         max_phase_temp = min(mpds_liquidus, key=lambda x: x[1])[1]
 
-    dft_phases, dft_phases_ebelow = {}, {}
-    min_form_e = 0
-
-    for entry in dft_ch.stable_entries:
-        comp_dict = entry.composition.fractional_composition.as_dict()
-        if len(comp_dict) == 1:
-            continue
-
-        comp = comp_dict.get(dft_ch.elements[1].symbol, 0)
-        form_e = dft_ch.get_form_energy_per_atom(entry)
-        dft_phases[entry.name] = ((comp, comp), form_e)
-        min_form_e = min(form_e, min_form_e)
-
-        ch_copy = PhaseDiagram([e for e in dft_ch.stable_entries if e != entry])
-        e_below_hull = -abs(dft_ch.get_hull_energy_per_atom(entry.composition) -
-                            ch_copy.get_hull_energy_per_atom(entry.composition))
-        dft_phases_ebelow[entry.name] = ((comp, comp), e_below_hull)
-
-    return (mpds_congruent_phases, mpds_incongruent_phases, max_phase_temp), (dft_phases, dft_phases_ebelow, min_form_e)
+    return ((mpds_congruent_phases, mpds_incongruent_phases, max_phase_temp),
+            (dft_phases, dft_phases_ebelow, min_form_e))
 
 
 def _get_dft_entries_from_components(components: list[str], dft_type: str) -> list[dict]:
@@ -341,7 +417,7 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str) -> li
     def fetch_entries(api_key, client_class, thermo_type=None):
         """Helper function to fetch entries from API."""
         if not api_key:
-            raise ValueError(f"Environment variable for {client_class.__name__} must contain a valid API key!")
+            raise ValueError("NEW_MP_API_KEY not found in environment variables!")
         with client_class(api_key) as MPR:
             criteria = {'thermo_types': [thermo_type]} if thermo_type else {}
             return MPR.get_entries_in_chemsys(components, additional_criteria=criteria)
@@ -349,14 +425,14 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str) -> li
     new_mp_api_key = os.getenv('NEW_MP_API_KEY')
     scan_entries, ggau_entries = [], []
 
-    if dft_type in {'R2SCAN', 'GGA/GGA+U/R2SCAN'}:
+    if dft_type in ['R2SCAN', 'MIXED']:
         scan_entries = fetch_entries(new_mp_api_key, MPRester, ThermoType.R2SCAN)
-    if dft_type in {'GGA/GGA+U', 'GGA/GGA+U/R2SCAN'}:
+    if dft_type in ['GGA', 'MIXED']:
         ggau_entries = fetch_entries(new_mp_api_key, MPRester, ThermoType.GGA_GGA_U)
 
-    if dft_type == 'GGA/GGA+U/R2SCAN':
+    if dft_type == 'MIXED':
         entries = MaterialsProjectDFTMixingScheme().process_entries(scan_entries + ggau_entries, verbose=False)
-    elif dft_type == 'GGA/GGA+U':
+    elif dft_type == 'GGA':
         entries = ggau_entries
     elif dft_type == 'R2SCAN':
         entries = scan_entries
@@ -371,7 +447,7 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str) -> li
     return computed_entry_dicts
 
 
-def get_dft_convexhull(input, dft_type='GGA/GGA+U',
+def get_dft_convexhull(input, dft_type='GGA',
                        inc_structure_data=False, verbose=False) -> tuple[PhaseDiagram, dict]:
     """
     Returns the DFT convex hull of a given system with specified functionals.
@@ -387,22 +463,32 @@ def get_dft_convexhull(input, dft_type='GGA/GGA+U',
     """
     components, sys_name, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
 
-    supported_dft_types = ["GGA/GGA+U", "R2SCAN", "GGA/GGA+U/R2SCAN"]
-    if dft_type not in supported_dft_types:
+    supp_dft_types = ["GGA", "R2SCAN", "MIXED"]
+    if dft_type not in supp_dft_types:
         raise SyntaxError(
             f"dft_type '{dft_type}' is not currently supported! "
-            f"Please specify as one of the following: {', '.join(supported_dft_types)}"
+            f"Please specify as one of the following: {', '.join(supp_dft_types)}"
         )
-
-    if 'Yb' in components and dft_type == 'GGA/GGA+U':
-        dft_type = 'GGA'
     if verbose:
         print(f"Using DFT entries solved with {dft_type} functionals.")
 
-    dft_entries_file = os.path.join(
-        data_dir, f"{sys_name}_ENTRIES_MP_{'_'.join(dft_type.split('/'))}.json"
-    )
-    use_compound_pd = any(len(Composition(c).elements) > 1 for c in components)
+    if config.dir_structure == 'nested':
+        sys_dir = os.path.join(config.data_dir, sys_name)
+        os.makedirs(sys_dir, exist_ok=True)
+    elif config.dir_structure == 'flat':
+        sys_dir = config.data_dir
+    else:
+        raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
+    
+    dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
+
+    # Yb-containing structures are only available with R2SCAN functional
+    # See https://docs.materialsproject.org/changes/database-versions#v2023.11.1
+    # and https://docs.materialsproject.org/changes/database-versions#v2025.02.12
+    if 'Yb' in components and not os.path.exists(dft_entries_file):
+        print("Warning: Yb-containing structures are only available with R2SCAN or MIXED functionals on the MP database.") 
+        # dft_type = 'R2SCAN' # optional, uncomment these lines to enforce R2SCAN functionals for Yb systems
+        # dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
 
     if os.path.exists(dft_entries_file):
         with open(dft_entries_file, "r") as f:
@@ -416,7 +502,7 @@ def get_dft_convexhull(input, dft_type='GGA/GGA+U',
         with open(dft_entries_file, "w") as f:
             json.dump(computed_entry_dicts, f)
 
-    if use_compound_pd:
+    if any(len(Composition(c).elements) > 1 for c in components):
         pd = CompoundPhaseDiagram(
             terminal_compositions=[Composition(c) for c in components],
             entries=[ComputedEntry.from_dict(e) for e in computed_entry_dicts],

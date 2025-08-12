@@ -119,7 +119,7 @@ def main():
             tern_fig = plotter.plot_ternary()
             valid_idx.append(i)
             congruent_temps.append(temp)
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=True)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
 
         except Exception as e:
@@ -138,7 +138,6 @@ def main():
 
     new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_{interp}.xlsx"), index=False)
             
-    # dump error_dict to json file
     with open(os.path.join(dump_dir, f"ternary_Gliq_errors_{interp}.json"), "w") as f:
         json.dump(Error_dict, f)
 
