@@ -1,6 +1,6 @@
 """
 Author: Joshua Willwerth
-Last Modified: June 30, 2025
+Last Modified: August 4, 2025
 Description: This script provides functions to interface with the Materials Project (MP) APIs and locally cache DFT
 calculated phase data. Publicly-availble data from the Materials Platform for Data Science (MPDS) may be downloaded and
 processed using this script in order to autopopulate BinaryLiquid objects using the `from_cache` method.
@@ -20,11 +20,12 @@ from pymatgen.core import Composition, Element, Structure
 from pymatgen.entries.computed_entries import ComputedEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
 from pymatgen.entries.mixing_scheme import MaterialsProjectDFTMixingScheme
-from gliquid.config import data_dir, dir_structure, fusion_enthalpies_file, fusion_temps_file, vaporization_temps_file
+import shutil
+import gliquid.config as config
 
-melt_enthalpies = json.load(open(fusion_enthalpies_file)) if os.path.exists(fusion_enthalpies_file) else {}
-melt_temps = json.load(open(fusion_temps_file)) if os.path.exists(fusion_temps_file) else {}
-boiling_temps = json.load(open(vaporization_temps_file)) if os.path.exists(vaporization_temps_file) else {}
+melt_enthalpies = json.load(open(config.fusion_enthalpies_file)) if os.path.exists(config.fusion_enthalpies_file) else {}
+melt_temps = json.load(open(config.fusion_temps_file)) if os.path.exists(config.fusion_temps_file) else {}
+boiling_temps = json.load(open(config.vaporization_temps_file)) if os.path.exists(config.vaporization_temps_file) else {}
 
 missing_files = []
 if not melt_enthalpies:
@@ -35,8 +36,8 @@ if not boiling_temps:
     missing_files.append("vaporization_temperatures.json")
 if missing_files:
     # Get the last two directories in the data_dir path
-    data_dir_parts = os.path.normpath(data_dir).split(os.sep)
-    last_two_dirs = os.sep.join(data_dir_parts[-2:]) if len(data_dir_parts) >= 2 else data_dir
+    data_dir_parts = os.path.normpath(config.data_dir).split(os.sep)
+    last_two_dirs = os.sep.join(data_dir_parts[-2:]) if len(data_dir_parts) >= 2 else config.data_dir
     raise FileNotFoundError(
         f"The following data files were not loaded correctly: {', '.join(missing_files)}. "
         f"Please ensure the files exist in the data directory '...{os.sep}{last_two_dirs}'."
@@ -200,13 +201,13 @@ def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, list[list] | None]:
     for comp, data in component_data.items():
         print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
 
-    if dir_structure == 'nested':
-        sys_dir = os.path.join(data_dir, sys_name)
+    if config.dir_structure == 'nested':
+        sys_dir = os.path.join(config.data_dir, sys_name)
         os.makedirs(sys_dir, exist_ok=True)
-    elif dir_structure == 'flat':
-        sys_dir = data_dir
+    elif config.dir_structure == 'flat':
+        sys_dir = config.data_dir
     else:
-        raise ValueError(f"Invalid dir_structure '{dir_structure}'. Must be 'nested' or 'flat'.")
+        raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
     
     if pd_ind is None:
         sys_file = os.path.join(sys_dir, f"{sys_name}.json")
@@ -365,7 +366,7 @@ def get_low_temp_phase_data(
     max_phase_temp = 0
 
     identified_phases = identify_mpds_phases(mpds_json)
-    mpds_liquidus, is_partial = extract_digitized_liquidus(mpds_json)
+    mpds_liquidus, _ = extract_digitized_liquidus(mpds_json)
 
     if not identified_phases:
         return ((mpds_congruent_phases, mpds_incongruent_phases, max_phase_temp), 
@@ -468,20 +469,26 @@ def get_dft_convexhull(input, dft_type='GGA',
             f"dft_type '{dft_type}' is not currently supported! "
             f"Please specify as one of the following: {', '.join(supp_dft_types)}"
         )
-
     if verbose:
         print(f"Using DFT entries solved with {dft_type} functionals.")
 
-    if dir_structure == 'nested':
-        sys_dir = os.path.join(data_dir, sys_name)
+    if config.dir_structure == 'nested':
+        sys_dir = os.path.join(config.data_dir, sys_name)
         os.makedirs(sys_dir, exist_ok=True)
-    elif dir_structure == 'flat':
-        sys_dir = data_dir
+    elif config.dir_structure == 'flat':
+        sys_dir = config.data_dir
     else:
-        raise ValueError(f"Invalid dir_structure '{dir_structure}'. Must be 'nested' or 'flat'.")
+        raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
     
     dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
-    use_compound_pd = any(len(Composition(c).elements) > 1 for c in components)
+
+    # Yb-containing structures are only available with R2SCAN functional
+    # See https://docs.materialsproject.org/changes/database-versions#v2023.11.1
+    # and https://docs.materialsproject.org/changes/database-versions#v2025.02.12
+    if 'Yb' in components and not os.path.exists(dft_entries_file):
+        print("Warning: Yb-containing structures are only available with R2SCAN or MIXED functionals on the MP database.") 
+        # dft_type = 'R2SCAN' # optional, uncomment these lines to enforce R2SCAN functionals for Yb systems
+        # dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
 
     if os.path.exists(dft_entries_file):
         with open(dft_entries_file, "r") as f:
@@ -495,7 +502,7 @@ def get_dft_convexhull(input, dft_type='GGA',
         with open(dft_entries_file, "w") as f:
             json.dump(computed_entry_dicts, f)
 
-    if use_compound_pd:
+    if any(len(Composition(c).elements) > 1 for c in components):
         pd = CompoundPhaseDiagram(
             terminal_compositions=[Composition(c) for c in components],
             entries=[ComputedEntry.from_dict(e) for e in computed_entry_dicts],
