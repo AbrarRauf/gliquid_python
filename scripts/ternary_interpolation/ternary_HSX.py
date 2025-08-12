@@ -167,7 +167,7 @@ def point_to_surface_height(new_point, liquid_points, triangulation, triangles):
     v1 = liquid_points[vertices[1]]
     v2 = liquid_points[vertices[2]]
     
-    def find_z_on_triangle(x, y, vertex1, vertex2, vertex3):    
+    def find_z_on_triangle(x, y, vertex1, vertex2, vertex3):
         x1, y1, z1 = vertex1
         x2, y2, z2 = vertex2
         x3, y3, z3 = vertex3

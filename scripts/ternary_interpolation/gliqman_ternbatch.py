@@ -7,13 +7,37 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu/"
+dump_dir = "all_dumps/gliq_manu_test/"
 read_dir = "all_dumps/binary_fits/"
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
 
 def main():
+    '''ERROR ANALYSIS'''
+    # # read in error json file from dump_dir
+    # with open(os.path.join(dump_dir, f"ternary_Gliq_errors_linear.json"), "r") as f:
+    #     Error_dict = json.load(f)
+
+
+    # # initialize a dataframe
+    # error_df = pd.DataFrame.from_dict(Error_dict, orient="index", columns=["error_message"])
+    # error_df.index.name = "system"
+    # error_df.reset_index(inplace=True)
+
+    # print(error_df)
+
+    # # extract the unique error messages to a list
+    # unique_errors = error_df["error_message"].unique().tolist()
+    # print(unique_errors)
+
+    # spec_err = unique_errors[1]
+
+    # # extract these systems to a list
+    # spec_err_systems = error_df[error_df["error_message"] == spec_err]["system"].tolist()
+    # print(spec_err_systems)
+    # print(len(spec_err_systems))
+
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "whs"
     interp = "linear"
@@ -24,13 +48,13 @@ def main():
     ternary_sys_list = [ast.literal_eval(e) if isinstance(e, str) else e for e in ternary_sys_list]
     
     system_list = binary_param_df["system"].tolist()
-    print(system_list)
-    print(ternary_sys_list)
     
     congruent_temps = []
     types = []
     valid_idx = []
 
+
+    Error_dict = {}
     for tern_sys in ternary_sys_list:
         i = ternary_sys_list.index(tern_sys)
         print(f"System {tern_sys} with index {i}")
@@ -80,7 +104,6 @@ def main():
             sub_df = sub_df.iloc[0]
             comp = [sub_df["x0"], sub_df["x1"]]
             temp = sub_df["T"] + 273.15
-            congruent_temps.append(temp)
             print(concat_df)
             sub_df2 = concat_df[(concat_df["Phase"] == "L") &
                                 (np.isclose(concat_df["x0"], comp[0], rtol=0, atol=0.025)) &
@@ -94,26 +117,30 @@ def main():
             else:
                 types.append("non-congruent")
             tern_fig = plotter.plot_ternary()
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}_system.html', auto_open=False)
             valid_idx.append(i)
+            congruent_temps.append(temp)
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
 
         except Exception as e:
-            print(f"Error in system {tern_sys} with index {i}: {e}")
-            continue
+            print(f"Error in system {'-'.join(sorted_sys)} with index {i}: {e}")
+            Error_dict['-'.join(sorted_sys)] = str(e)
 
     print(congruent_temps)
     print(types)
     print(valid_idx)
+    print(Error_dict)
 
     new_df = ternary_df.iloc[valid_idx]
     new_df["gliq_melting_temp"] = congruent_temps
     new_df["type"] = types
     print(new_df)
 
-    new_df.to_excel(os.path.join(dump_dir, "ternary_Gliq_mps.xlsx"), index=False)
+    new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_{interp}.xlsx"), index=False)
             
-
+    # dump error_dict to json file
+    with open(os.path.join(dump_dir, f"ternary_Gliq_errors_{interp}.json"), "w") as f:
+        json.dump(Error_dict, f)
 
 if __name__ == "__main__":
     main()
