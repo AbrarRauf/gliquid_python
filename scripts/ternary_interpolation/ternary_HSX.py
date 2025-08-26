@@ -1,6 +1,5 @@
 '''
-Author: Abrar Rauf
-Edited by Josh 06/26/25
+Author: Abrar Rauf, Joshua Wilwerth
 This module contains the classes for ternary interpolation and ternary phase diagram plotting.
 '''
 import os
@@ -227,6 +226,7 @@ class ternary_interpolation:
         self.tern_comp = generate_comp_grid(self.delta)
         self.interp_type = kwargs.get('interp_type', 'linear')  # default to linear interpolation
         self.param_format = kwargs.get('param_format', 'linear')
+        self.fit_or_pred = kwargs.get('fit_or_pred', {})  # dict of 'fit' or 'pred' for each binary system
         self.L_dict = kwargs.get('L_dict', {}) # adding functionality to pass in a dict of L parameters on construction
         self.L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
     
@@ -367,6 +367,9 @@ class ternary_interpolation:
             sys_eles.append(el)
         entries_init = self.get_phasedia_entries(sys)
         entries = [ComputedStructureEntry.from_dict(e) for e in entries_init]
+        if "Mg" in sys:
+            # filter out entries where the composition fraction of Mg is 149
+            entries = [e for e in entries if e.composition.get("Mg", 0) != 149]
         
         pdia = PhaseDiagram(entries)
         entries = pdia.stable_entries
@@ -409,52 +412,20 @@ class ternary_interpolation:
     def add_binary_data(self):
         # add binary data to the ternary data and plot the binaries (optional)
         bin_fig_list = []
-        def process_system(sys_name, i, invert=False):
+        def process_system(sys_name):
             params = self.L_dict[sys_name]
-            # if invert:
-            #     sys_name = invert_substrings(sys_name)
-
-            # rows = self.bin_df.loc[self.bin_df['system'] == sys_name]
-            # row = rows.iloc[1] if len(rows) == 2 else rows.iloc[0]
-            # params = [row['L0_a'], row['L0_b'], row['L1_a'], row['L1_b']]
-            print(params, sys_name, invert)
-            sys = BinaryLiquid.from_cache(sys_name, params=params, param_format=self.param_format)
+            sys = BinaryLiquid.from_cache(input="-".join(sorted(sys_name.split('-'))), params=params, param_format=self.param_format,)
             data = sys.update_phase_points()
-            figr = sys.hsx.plot_tx()
+            fit_type = self.fit_or_pred[sys_name] 
+            if fit_type == 'fit':
+                figr = sys.hsx.plot_tx(digitized_liquidus=sys.digitized_liq)
+            else:
+                figr = sys.hsx.plot_tx(pred=True)
             bin_fig_list.append(figr)
             
-            data_df = pd.DataFrame(data, columns=['X', 'S', 'H', 'Phase Name'])
-            x_col = data_df['X']
-            if invert:
-                x_col = 1 - x_col
 
-            if i == 0:
-                x0 = x_col
-                x1 = np.zeros_like(x0)
-            elif i == 1:
-                x1 = x_col
-                x0 = 1 - x1
-            else:
-                x1 = 1 - x_col
-                x0 = np.zeros_like(x1)
-            i += 1
-
-            data_df['x0'], data_df['x1'] = x0, x1
-
-            return data_df.drop(columns=['X']), i
-
-
-        i = 0 
         for sys_name in self.L_dict.keys():
-            # if sys_name in self.bin_df['system'].values:
-            data_df, i = process_system(sys_name, i, invert=sorted(sys_name.split('-')) != sys_name.split('-'))
-            # elif invert_substrings(sys_name) in self.bin_df['system'].values:
-            #     data_df, i = process_system(sys_name, i, invert=True)
-            # else:
-            #     print(f"System {sys_name} not found")
-            #     continue
-
-            self.hsx_df = pd.concat([self.hsx_df, data_df], ignore_index=True)
+            process_system(sys_name)
 
         return bin_fig_list
         
@@ -462,228 +433,12 @@ class ternary_interpolation:
     def interpolate(self):
         # create the hsx dataframe for the ternary system
         self.ternary_interpolation() # populates self.hsx_df with ternary liquid phase data
-        # self.bin_fig_list = self.add_binary_data()
+        self.bin_fig_list = self.add_binary_data()
         self.tern_mp_df = self.get_ternary_form_en(self.tern_sys)
         self.hsx_df = pd.concat([self.hsx_df, self.tern_mp_df], ignore_index=True)
         self.hsx_df = self.hsx_df.drop_duplicates()
         self.hsx_df = self.hsx_df.reset_index(drop=True)
 
-   
-class ternary_hsx_plotter(ternary_interpolation): 
-    def __init__(self, tern_sys: List[str],direct: str, **kwargs):
-        delta = kwargs.get('delta', 0.025)
-        interp_type = kwargs.get('interp_type', 'linear')
-        param_format = kwargs.get('param_format', 'linear')
-        L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
-        L_dict = kwargs.get('L_dict', {})  # binary interaction parameters
-        super().__init__(tern_sys,direct, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
-        self.temp_slider = kwargs.get('temp_slider', [0, 0])
-
-    def init_sys(self):
-        self.tern_sys_name = '-'.join(sorted(self.tern_sys))
-        self.phases = self.hsx_df['Phase Name'].unique().tolist()
-
-        solid_phases = self.phases.copy()
-        solid_phases.remove('L')
-        # Generate a random color array with at least 100 options
-        def random_color():
-            return f"#{random.randint(0, 0xFFFFFF):06x}"
-        color_array = [random_color() for _ in range(100)]
-        self.color_map = dict(zip(solid_phases, color_array))
-        self.color_map['L'] = 'cornflowerblue'
-
-        fusion_temp = pd.read_json(os.path.join(fusion_temps_file), typ='series')
-        tern_temp = fusion_temp[self.tern_sys].values 
-        max_temp = np.max(tern_temp) + 500
-        min_temp = np.min(tern_temp)
-        self.conds = [np.min(np.array([0, min_temp - 200])), max_temp + self.temp_slider[1]]
-        self.hsx_df['x0'] = self.hsx_df['x0'].round(4)
-        self.hsx_df['x1'] = self.hsx_df['x1'].round(4)
-        self.hsx_df = self.hsx_df.rename(columns={'Phase Name': 'Phase'})
-        self.hsx_df['Colors'] = self.hsx_df['Phase'].map(self.color_map)
-        print('Initialization complete')
-
-    def lower_convexhull(self):
-        start_time = time.time()
-        self.points = np.array(self.hsx_df[['x0', 'x1', 'S', 'H']])
-        self.simplices = gliq_lowerhull3(self.points, vertical_simplices=True)
-        # self.simplices = direct_lowerhull(self.points)
-        self.temps = gen_hyperplane_eqns2(points = self.points, lower_hull = self.simplices, partial_indices = [2])[1]
-        nan_indices = []
-        for i in range(len(self.temps)):
-            if str(self.temps[i]) == 'nan' or str(self.temps[i]) == 'inf' or str(self.temps[i]) == '-inf':
-                nan_indices.append(i)
-
-        self.temps = np.delete(self.temps, nan_indices)
-        self.simplices = np.delete(self.simplices, nan_indices, axis=0)
-        end_time = time.time()
-        print(f"Convex hull and partial derivative evaluation time:: {end_time - start_time} seconds")
-
-    def process_data(self):
-        self.init_sys()
-        self.lower_convexhull()
-        phase_equil = []
-        for simplex in self.simplices:
-            phase1 = self.hsx_df.loc[simplex[0], 'Phase']
-            phase2 = self.hsx_df.loc[simplex[1], 'Phase']
-            phase3 = self.hsx_df.loc[simplex[2], 'Phase']
-            phase4 = self.hsx_df.loc[simplex[3], 'Phase']
-            phase_equil.append(np.array([phase1, phase2, phase3, phase4]))
-
-        data = []
-        for i, simplex in enumerate(self.simplices):
-            phase_labels = phase_equil[i]
-            if len(set(phase_labels)) == 0:
-                continue
-            else:
-                x0_coords = [self.points[vertex][0] for vertex in simplex] 
-                x1_coords = [self.points[vertex][1] for vertex in simplex]
-                t_val = self.temps[i]
-
-            j = 0
-            for x0, x1 in zip(x0_coords, x1_coords):
-                label = phase_labels[j]
-                color = self.color_map[label]
-                data.append([x0, x1, t_val, label, color])
-                j += 1
-
-        self.equil_df = pd.DataFrame(data, columns=['x0', 'x1', 't', 'label', 'color'])
-        self.equil_df = self.equil_df.dropna(subset=['t'])
-        self.equil_df['t'] = self.equil_df['t'] - 273.15
-        self.equil_df = cartesian_to_ternary(self.equil_df)
-        self.equil_liq_df = self.equil_df[self.equil_df['label'] == 'L']
-        self.equil_solid_df = self.equil_df[self.equil_df['label'] != 'L']
-        self.equil_solid_df = self.equil_solid_df.sort_values('t').drop_duplicates(subset=['x0', 'x1'], keep='last')
-
-        for index, row in self.equil_solid_df.iterrows():
-            x0 = row['x0']
-            x1 = row['x1']
-            label = row['label']
-            color = row['color']
-            new_row = {'x0': x0, 'x1': x1, 't': self.conds[0], 'label': label, 'color': color}
-            new_row_df = pd.DataFrame([new_row])
-            self.equil_solid_df = pd.concat([self.equil_solid_df, new_row_df])
-
-        self.equil_liq_df = self.equil_liq_df.sort_values('t').drop_duplicates(subset=['x0', 'x1'], keep='first')
-        self.equil_df = pd.concat([self.equil_solid_df, self.equil_liq_df])        
-        
-    def plot_ternary(self):
-        fig = go.Figure()
-
-        scatter = go.Scatter3d(
-            x = self.equil_liq_df['x0'], y = self.equil_liq_df['x1'], z = self.equil_liq_df['t'],
-            mode = 'markers', marker = dict(size = 5, color = self.equil_liq_df['color']),
-            showlegend=False, opacity = 1,
-        )
-
-        solid_points = np.array(list(zip(self.equil_solid_df['x0'], self.equil_solid_df['x1'], self.equil_solid_df['t'])))
-        liq_points = np.array(list(zip(self.equil_liq_df['x0'], self.equil_liq_df['x1'], self.equil_liq_df['t'])))
-        cart_liq_points = [ternary_to_cartesian(point[0], point[1]) for point in liq_points]
-        triangulation = Delaunay(cart_liq_points)
-        triangles = triangulation.simplices
-
-        # identify outlier points
-        # try:
-        #     is_outlier = find_outliers_by_local_stats(liq_points, triangulation)
-        #     liq_points = liq_points[~is_outlier]
-        # except Exception as e:
-        #     print('Outlier detection error:', e)
-
-        try:
-            for point in solid_points:
-                height = point_to_surface_height(point, liq_points, triangulation, triangles)[0]
-                if height > 10:
-                    new_row = {'x0': point[0], 'x1': point[1], 't': point[2] + 3, 'label': 'L', 'color': 'cornflowerblue'}
-                    new_row_df = pd.DataFrame([new_row])
-                    self.equil_liq_df = pd.concat([self.equil_liq_df, new_row_df])
-        except Exception as e:
-            print('Solid meshing error:', e)
-
-        liq_points = np.array(list(zip(self.equil_liq_df['x0'], self.equil_liq_df['x1'], self.equil_liq_df['t'])))     
-        cart_liq_points = [ternary_to_cartesian(point[0], point[1]) for point in liq_points]
-        triangulation = Delaunay(cart_liq_points)
-        triangles = triangulation.simplices
-
-        fig.add_trace(go.Mesh3d(
-            x = self.equil_liq_df['x0'], y = self.equil_liq_df['x1'], z = self.equil_liq_df['t'],
-            i = triangles[:, 0], j = triangles[:, 1], k = triangles[:, 2],
-            opacity = 0.7, colorscale = 'Viridis', intensity = self.equil_liq_df['t'],
-            showscale = False,
-        ))
-        
-
-        for label, group in self.equil_solid_df.groupby('label'):
-            fig.add_trace(go.Scatter3d(
-                x = group['x0'], y = group['x1'], z = group['t'],
-                mode = 'lines', line = dict(color = group['color'], width = 10),
-                showlegend = False, opacity = 1,
-            ))
-
-        fig.add_trace(go.Scatter3d(
-            x=[0, 0.5, 1, 0],
-            y=[0, np.sqrt(3)/2, 0, 0],
-            z=[self.conds[0], self.conds[0], self.conds[0], self.conds[0]],
-            mode='lines',
-            line=dict(color='black', width=5),
-            name = 'axes',
-            showlegend=False
-        ))
-
-        fig.add_trace(go.Scatter3d(
-            x=[-0.02, 0.48, 0.98, -0.02],
-            y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
-            z=[self.conds[0] - 50, self.conds[0] - 50, self.conds[0]- 50, self.conds[0] - 50],
-            mode='text',
-            text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
-            textposition='top center',
-            showlegend=False,
-            textfont=dict(size=12)
-        ))
-
-        legend_elements = []
-        for name, color in self.color_map.items():
-            legend_elements.append(dict(
-                x=0, y=0, z=0, xref='paper', yref='paper', zref='paper',
-                text = name, marker = dict(color = color),
-            ))
-        for entry in legend_elements:
-            fig.add_trace(go.Scatter3d(
-            x=[None], y=[None], z=[None], mode='lines+text',
-            marker=dict(color=entry['marker']['color']),
-            name=entry['text'],
-            textfont=dict(size=8)  # Adjust the font size here
-            ))
-        
-        fig.update_layout(
-            legend=dict(
-                x=0.95, y=0.95, xanchor='left', yanchor='top'    
-            ),
-            autosize = True,
-            margin = dict(l = 50, r = 50, b = 50, t = 50),
-            scene=dict(
-                zaxis = dict(range=[self.conds[0] - 50 - self.temp_slider[0], self.conds[1] + self.temp_slider[1]],
-                            title='Temperature (C)'), 
-                xaxis = dict(title=' ',
-                        showticklabels=False,
-                        showaxeslabels=False,
-                        showgrid=False,
-                ),
-                yaxis = dict(title=' ',
-                        showticklabels=False,
-                        showaxeslabels=False,
-                        showgrid=False,
-                ),
-                xaxis_visible=True,
-                yaxis_visible=True,
-                zaxis_visible=True,
-                bgcolor='white',
-                camera=dict(
-                    projection=dict(type='orthographic'),         
-                )
-            )
-        )
-
-        return fig
 
 
 class ternary_gtx_plotter(ternary_interpolation):
@@ -693,7 +448,8 @@ class ternary_gtx_plotter(ternary_interpolation):
         param_format = kwargs.get('param_format', 'linear')
         L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
         L_dict = kwargs.get('L_dict', {})  # binary interaction parameters
-        super().__init__(tern_sys,direct, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict)
+        fit_or_pred = kwargs.get('fit_or_pred', {})  # dict of 'fit' or 'pred' for each binary system
+        super().__init__(tern_sys,direct, interp_type=interp_type, param_format=param_format, delta=delta, L_tern=L_tern, L_dict=L_dict, fit_or_pred=fit_or_pred)
         self.temp_slider = kwargs.get('temp_slider', [0, 0])  # temperature slider for the plot
         self.T_incr = kwargs.get('T_incr', 10)  # temperature increment for the grid
 
@@ -776,6 +532,10 @@ class ternary_gtx_plotter(ternary_interpolation):
 
             temp_df = pd.DataFrame(data, columns=['x0', 'x1', 'T', 'Phase', 'Colors', 'simplex_id'])
 
+            # Store original coordinates before transformation
+            temp_df['x0_orig'] = temp_df['x0'].copy()
+            temp_df['x1_orig'] = temp_df['x1'].copy()
+            
             temp_df = cartesian_to_ternary(temp_df)
             temp_df['T'] = temp_df['T'] - 273.15
 
@@ -783,6 +543,152 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         end_time = time.time()
         print(f"Lower hull evaluation and post processing time:: {end_time - start_time} seconds for temperature increment of {self.T_incr}")
+
+    def _add_isothermal_lines(self, fig, liq_points, triangles):
+        """
+        Add iso-temperature contour lines to the 3D liquidus surface.
+        
+        Args:
+            fig: Plotly figure object
+            liq_points: Array of liquid points (x0, x1, T)
+            triangles: Triangle indices for the mesh
+        """
+        # Get temperature range
+        temps = liq_points[:, 2]
+        temp_min, temp_max = np.min(temps), np.max(temps)
+        temp_range = temp_max - temp_min
+        
+        # Choose appropriate delta_T based on range
+        if temp_range <= 10:
+            delta_T = 1.0
+        elif temp_range <= 25:
+            delta_T = 2.0
+        elif temp_range <= 50:
+            delta_T = 2.5
+        elif temp_range <= 100:
+            delta_T = 5
+        elif temp_range <= 200:
+            delta_T = 10
+        else:
+            delta_T = max(10, temp_range / 20)
+        
+        # Generate iso-temperature values
+        iso_temps = np.arange(
+            temp_min + delta_T, 
+            temp_max, 
+            delta_T
+        )
+        
+        # For each iso-temperature, find intersection lines with triangles
+        for iso_temp in iso_temps:
+            line_segments = []
+            
+            for triangle in triangles:
+                # Get the three vertices of the triangle
+                v1 = liq_points[triangle[0]]
+                v2 = liq_points[triangle[1]]
+                v3 = liq_points[triangle[2]]
+                
+                # Find intersections of the iso-temperature plane with triangle edges
+                intersections = []
+                
+                # Check each edge of the triangle
+                edges = [(v1, v2), (v2, v3), (v3, v1)]
+                for p1, p2 in edges:
+                    # Check if iso_temp is between the temperatures of the edge endpoints
+                    t1, t2 = p1[2], p2[2]
+                    if (t1 <= iso_temp <= t2) or (t2 <= iso_temp <= t1):
+                        if abs(t2 - t1) > 1e-8:  # More strict tolerance for flatter surfaces
+                            # Linear interpolation to find intersection point
+                            alpha = (iso_temp - t1) / (t2 - t1)
+                            intersection = p1 + alpha * (p2 - p1)
+                            intersection[2] = iso_temp  # Ensure exact temperature
+                            intersections.append(intersection)
+                
+                # If we have exactly 2 intersections, we have a line segment
+                if len(intersections) == 2:
+                    line_segments.append(intersections)
+            
+            # Connect line segments into continuous contours
+            if line_segments:
+                connected_contours = self._connect_line_segments(line_segments)
+                
+                # Add each connected contour as a separate trace
+                for contour in connected_contours:
+                    if len(contour) >= 2:  # Only plot if we have at least 2 points
+                        x_coords = [point[0] for point in contour]
+                        y_coords = [point[1] for point in contour]
+                        z_coords = [point[2] for point in contour]
+                        
+                        fig.add_trace(go.Scatter3d(
+                            x=x_coords,
+                            y=y_coords,
+                            z=z_coords,
+                            mode='lines',
+                            line=dict(color='white', width=2),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+    
+    def _connect_line_segments(self, segments, tolerance=1e-4):
+        """
+        Connect line segments into continuous contours.
+        
+        Args:
+            segments: List of line segments, each segment is [point1, point2]
+            tolerance: Distance tolerance for connecting endpoints
+            
+        Returns:
+            List of connected contours, each contour is a list of points
+        """
+        if not segments:
+            return []
+        
+        contours = []
+        remaining_segments = segments.copy()
+        
+        while remaining_segments:
+            # Start a new contour with the first remaining segment
+            current_contour = list(remaining_segments.pop(0))
+            
+            # Keep trying to extend the contour
+            extended = True
+            while extended and remaining_segments:
+                extended = False
+                
+                # Try to find a segment that connects to either end of current contour
+                for i, segment in enumerate(remaining_segments):
+                    p1, p2 = segment[0], segment[1]
+                    
+                    # Check if segment connects to the end of current contour
+                    end_point = current_contour[-1]
+                    if np.linalg.norm(p1[:2] - end_point[:2]) < tolerance:
+                        current_contour.append(p2)
+                        remaining_segments.pop(i)
+                        extended = True
+                        break
+                    elif np.linalg.norm(p2[:2] - end_point[:2]) < tolerance:
+                        current_contour.append(p1)
+                        remaining_segments.pop(i)
+                        extended = True
+                        break
+                    
+                    # Check if segment connects to the beginning of current contour
+                    start_point = current_contour[0]
+                    if np.linalg.norm(p1[:2] - start_point[:2]) < tolerance:
+                        current_contour.insert(0, p2)
+                        remaining_segments.pop(i)
+                        extended = True
+                        break
+                    elif np.linalg.norm(p2[:2] - start_point[:2]) < tolerance:
+                        current_contour.insert(0, p1)
+                        remaining_segments.pop(i)
+                        extended = True
+                        break
+            
+            contours.append(current_contour)
+        
+        return contours
 
     def plot_ternary(self):
         fig = go.Figure()
@@ -852,6 +758,17 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         self.liq_plotting_df = self.liq_plotting_df.sort_values('T').drop_duplicates(subset=['x0', 'x1'], keep='first')
 
+        # Create coexistent phases information for liquid points
+        def get_coexistent_phases(simplex_id):
+            """Get coexistent solid phases for a given simplex_id"""
+            coexistent = simplex_df[(simplex_df['simplex_id'] == simplex_id) & (simplex_df['Phase'] != 'L')]
+            # coexistent = simplex_df[(simplex_df['simplex_id'] == simplex_id)]
+            if len(coexistent) > 0:
+                phases = coexistent['Phase'].unique()
+                return ', '.join(sorted(phases))
+            return ''
+
+        self.liq_plotting_df['coexistent_phases'] = self.liq_plotting_df['simplex_id'].apply(get_coexistent_phases)
 
         solid_points = np.array(list(zip(self.solid_plotting_df['x0'], self.solid_plotting_df['x1'], self.solid_plotting_df['T'])))
         liq_points = np.array(list(zip(self.liq_plotting_df['x0'], self.liq_plotting_df['x1'], self.liq_plotting_df['T'])))
@@ -889,6 +806,8 @@ class ternary_gtx_plotter(ternary_interpolation):
                 x = group['x0'], y = group['x1'], z = group['T'],
                 mode = 'lines', line = dict(color = group['Colors'], width = 10),
                 showlegend = False, opacity = 1,
+                hovertemplate = f'<b>Phase: {label}</b><br>' +
+                                '<extra></extra>'
             ))
 
         fig.add_trace(go.Mesh3d(
@@ -896,7 +815,19 @@ class ternary_gtx_plotter(ternary_interpolation):
             i = triangles[:, 0], j = triangles[:, 1], k = triangles[:, 2],
             opacity = 0.6, colorscale = 'Viridis', intensity = self.liq_plotting_df['T'],
             showscale = False,
+            hovertemplate = '<b>Liquidus Surface</b><br>' +
+                          f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                          f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                          'T: %{z:.1f}°C<br>' +
+                        #   'Coexistent Phases: %{customdata[2]}<br>' +
+                          '<extra></extra>',
+            customdata = np.column_stack((self.liq_plotting_df['x0_orig'], 
+                                        self.liq_plotting_df['x1_orig'],
+                                        self.liq_plotting_df['coexistent_phases']))
         ))
+
+        # Add iso-temperature lines
+        self._add_isothermal_lines(fig, liq_points, triangles)
 
         for phase, color in self.color_map.items():
             fig.add_trace(go.Scatter3d(
@@ -916,18 +847,18 @@ class ternary_gtx_plotter(ternary_interpolation):
             name = 'axes',
             showlegend=False
         ))
+        
+        fig.add_trace(go.Scatter3d(
+            x=[-0.02, 0.48, 0.98, -0.02],
+            y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
+            z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
+            mode='text',
+            text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
+            textposition='top center',
+            showlegend=False,
+            textfont=dict(size=12)
+        ))
 
-        # FIXTHISLATER
-        # fig.add_trace(go.Scatter3d(
-        #     x=[-0.02, 0.48, 0.98, -0.02],
-        #     y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
-        #     z=[self.conds[0] - 50, self.conds[0] - 50, self.conds[0]- 50, self.conds[0] - 50],
-        #     mode='text',
-        #     text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
-        #     textposition='top center',
-        #     showlegend=False,
-        #     textfont=dict(size=12)
-        # ))
          
         fig.update_layout(
             legend=dict(
@@ -936,7 +867,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             autosize = True,
             margin = dict(l = 50, r = 50, b = 50, t = 50),
             scene=dict(
-                zaxis = dict(range=[self.conds[0] - 50 - self.temp_slider[0], self.conds[1] + self.temp_slider[1]],
+                zaxis = dict(range=[self.conds[0] - 200 - self.temp_slider[0], self.conds[1] - 200 + self.temp_slider[1]],
                             title='Temperature (C)'), 
                 xaxis = dict(title=' ',
                         showticklabels=False,
@@ -958,5 +889,5 @@ class ternary_gtx_plotter(ternary_interpolation):
             )
         )
 
-        return fig    
+        return fig
 

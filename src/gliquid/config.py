@@ -12,15 +12,17 @@ def set_project_root(path: Path):
 def set_data_dir(path: Path):
     global data_dir
     data_dir = path
+    print("DATAPATH: ", data_dir)
 
 def set_dir_structure(structure: str):
     global dir_structure
     if structure not in _DIR_STRUCT_OPTS:
         raise ValueError(f"dir_structure must be one of {_DIR_STRUCT_OPTS}")
     dir_structure = structure
+    print("DIR STRUCTURE: ", dir_structure)
 
 set_project_root(Path.cwd())
-set_data_dir(Path(project_root / "data"))
+set_data_dir(Path(project_root / "/matrix_data_jsons"))
 set_dir_structure(_DIR_STRUCT_OPTS[0])
 
 fusion_enthalpies_file = data_dir / "fusion_enthalpies.json"

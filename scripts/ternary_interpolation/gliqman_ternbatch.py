@@ -39,7 +39,7 @@ def main():
     # print(len(spec_err_systems))
 
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
-    tern_param_format = "whs"
+    tern_param_format = "combined"
     interp = "linear"
 
     binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
@@ -56,6 +56,7 @@ def main():
 
     Error_dict = {}
     for tern_sys in ternary_sys_list:
+        tern_sys = ["Ba", "Mg", "Si"]
         i = ternary_sys_list.index(tern_sys)
         print(f"System {tern_sys} with index {i}")
         congruent_temp = ternary_df.iloc[i]["melting_point_k"]
@@ -91,7 +92,7 @@ def main():
 
             print(binary_L_dict)
             plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
-                                        L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=5.0, delta=0.01)
+                                        L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=5.0, delta=0.025)
             plotter.interpolate()
             plotter.process_data()
             df_list = plotter.equil_df_list
@@ -119,8 +120,11 @@ def main():
             tern_fig = plotter.plot_ternary()
             valid_idx.append(i)
             congruent_temps.append(temp)
+            # binary_plot1 = plotter.bin_fig_list[0]
+            # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
             ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=True)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
+            exit()
 
         except Exception as e:
             print(f"Error in system {'-'.join(sorted_sys)} with index {i}: {e}")
