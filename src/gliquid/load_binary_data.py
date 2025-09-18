@@ -27,6 +27,10 @@ melt_enthalpies = json.load(open(config.fusion_enthalpies_file)) if os.path.exis
 melt_temps = json.load(open(config.fusion_temps_file)) if os.path.exists(config.fusion_temps_file) else {}
 boiling_temps = json.load(open(config.vaporization_temps_file)) if os.path.exists(config.vaporization_temps_file) else {}
 
+
+print(config.dir_structure)
+exit()
+
 missing_files = []
 if not melt_enthalpies:
     missing_files.append("fusion_enthalpies.json")

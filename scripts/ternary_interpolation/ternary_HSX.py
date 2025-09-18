@@ -853,7 +853,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
             z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
             mode='text',
-            text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
+        text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
             textposition='top center',
             showlegend=False,
             textfont=dict(size=12)

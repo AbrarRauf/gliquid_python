@@ -22,8 +22,8 @@ def set_dir_structure(structure: str):
     print("DIR STRUCTURE: ", dir_structure)
 
 set_project_root(Path.cwd())
-set_data_dir(Path(project_root / "/matrix_data_jsons"))
-set_dir_structure(_DIR_STRUCT_OPTS[0])
+set_data_dir(Path(project_root / "/data"))
+set_dir_structure(_DIR_STRUCT_OPTS[1])
 
 fusion_enthalpies_file = data_dir / "fusion_enthalpies.json"
 fusion_temps_file = data_dir / "fusion_temperatures.json"

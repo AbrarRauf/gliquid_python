@@ -7,8 +7,9 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test/"
+dump_dir = "all_dumps/gliq_manu_test2/"
 read_dir = "all_dumps/binary_fits/"
+print(data_dir)
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
@@ -42,7 +43,8 @@ def main():
     tern_param_format = "combined"
     interp = "linear"
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")
     ternary_sys_list = ternary_df["elements"].tolist()
     ternary_sys_list = [ast.literal_eval(e) if isinstance(e, str) else e for e in ternary_sys_list]
@@ -56,7 +58,7 @@ def main():
 
     Error_dict = {}
     for tern_sys in ternary_sys_list:
-        tern_sys = ["Ba", "Mg", "Si"]
+        # tern_sys = ["Ba", "Mg", "Si"]
         i = ternary_sys_list.index(tern_sys)
         print(f"System {tern_sys} with index {i}")
         congruent_temp = ternary_df.iloc[i]["melting_point_k"]
@@ -71,17 +73,44 @@ def main():
             print(binary_sys_labels)
 
             binary_L_dict = {}
+            fitorpred = {}
 
+            # for bin_sys in binary_sys_labels:
+            #     flipped_sys = "-".join(sorted(bin_sys.split("-")))
+            #     print(flipped_sys)
+
+            #     if bin_sys in binary_param_df["system"].tolist():
+            #         params = binary_param_df[binary_param_df["system"] == bin_sys].iloc[0]
+            #     elif flipped_sys in binary_param_df["system"].tolist():
+            #         params = binary_param_df[binary_param_df["system"] == flipped_sys].iloc[0]
+            #     else:
+            #         raise Exception("System not in df")
+
+            #     binary_L_dict[bin_sys] = [
+            #         float(params["L0_a"]),
+            #         float(params["L0_b"]),
+            #         float(params["L1_a"]),
+            #         float(params["L1_b"])
+            #     ]
+            
             for bin_sys in binary_sys_labels:
-                flipped_sys = "-".join(sorted(bin_sys.split("-")))
-                print(flipped_sys)
+                flipped_sys = "-".join(sorted(bin_sys.split('-')))
 
-                if bin_sys in binary_param_df["system"].tolist():
-                    params = binary_param_df[binary_param_df["system"] == bin_sys].iloc[0]
-                elif flipped_sys in binary_param_df["system"].tolist():
-                    params = binary_param_df[binary_param_df["system"] == flipped_sys].iloc[0]
+                if bin_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                elif flipped_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                elif bin_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                elif flipped_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
                 else:
-                    raise Exception("System not in df")
+                    raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
+
 
                 binary_L_dict[bin_sys] = [
                     float(params["L0_a"]),
@@ -92,12 +121,14 @@ def main():
 
             print(binary_L_dict)
             plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
-                                        L_dict=binary_L_dict, temp_slider=[0, -300], T_incr=5.0, delta=0.025)
+                                        L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5.0, delta=0.025, fit_or_pred=fitorpred)
             plotter.interpolate()
             plotter.process_data()
             df_list = plotter.equil_df_list
             concat_df = pd.concat(df_list, ignore_index=True)
             sub_df = concat_df[concat_df["Phase"] == congruent_phase]
+            tern_fig = plotter.plot_ternary()
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
             if sub_df.empty:
                 raise Exception("MPDS congruent phase not on the hull!")
 
@@ -113,18 +144,15 @@ def main():
             sub_df2 = sub_df2.iloc[0]
             temp2 = sub_df2["T"] + 273.15
             print(temp, temp2)
-            if abs(temp - temp2) < 10:
+            if abs(temp - temp2) < 20:
                 types.append("congruent")
             else:
                 types.append("non-congruent")
-            tern_fig = plotter.plot_ternary()
             valid_idx.append(i)
             congruent_temps.append(temp)
             # binary_plot1 = plotter.bin_fig_list[0]
             # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=True)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
-            exit()
 
         except Exception as e:
             print(f"Error in system {'-'.join(sorted_sys)} with index {i}: {e}")
@@ -140,9 +168,9 @@ def main():
     new_df["type"] = types
     print(new_df)
 
-    new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_{interp}.xlsx"), index=False)
+    new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_final_{interp}.xlsx"), index=False)
             
-    with open(os.path.join(dump_dir, f"ternary_Gliq_errors_{interp}.json"), "w") as f:
+    with open(os.path.join(dump_dir, f"ternary_Gliq_errors_final_{interp}.json"), "w") as f:
         json.dump(Error_dict, f)
 
 if __name__ == "__main__":
