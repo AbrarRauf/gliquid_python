@@ -1,10 +1,10 @@
 import pandas as pd 
 import matplotlib.pyplot as plt
-import os 
 import ast
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
+from adjustText import adjust_text
 
 def eutectic_fig():
     eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results.xlsx"
@@ -190,9 +190,65 @@ def eutectic_fig():
     fig.show()
 
 
+def inter_figure():
+    inter_path = "all_dumps/gliq_manu_test2/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data = "all_dumps/gliq_manu_test2/ternary_Gliq_meta_final_linear.json"
+
+    df = pd.read_excel(inter_path)
+
+
+    print(df.head())
+    # Color mapping
+    colors = {'congruent': 'tab:blue', 'non-congruent': 'tab:orange'}
+    df['color'] = df['type'].map(colors)
+
+    # Create the scatter plot
+    # plt.figure(figsize=(15, 4))
+    plt.figure(figsize=(8, 6))
+    plt.scatter(
+        df['melting_point_k'],
+        df['gliq_melting_temp'],
+        c=df['color'],
+        s=80  # Adjust marker size here (default is 20)
+    )
+
+    # Label each point with the reduced formula (optional, toggle by commenting)
+    # texts = []
+    # for _, row in df.iterrows():
+    #     texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+
+    # # Adjust text to reduce overlaps
+    # adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+
+    # Plot the reference y=x line
+    min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
+    max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max()) - 300
+    plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
+
+    # Axis labels and title
+    plt.xlabel('MPDS Congruent Melting Temperature (K)')
+    plt.ylabel('Interpolated Melting Temperature (K)')
+
+    # modify x-axis limits
+    # plt.xlim(min_val, max_val - 150)
+    plt.xlim(300, 2500)
+    plt.ylim(300, 2500)
+
+    # # Custom legend for congruency
+    # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
+    #            for label, color in colors.items()]
+    # handles.append(plt.Line2D([], [], linestyle='--', color='k', label='y = x'))
+    # plt.legend(handles=handles)
+
+    # plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
-    eutectic_fig()
-    
+    # eutectic_fig()
+    inter_figure()
+
 
 if __name__ == "__main__":
     main()

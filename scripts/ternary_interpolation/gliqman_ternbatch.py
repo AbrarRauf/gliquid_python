@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test2/"
+dump_dir = "all_dumps/gliq_manu_test3/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -55,7 +55,7 @@ def main():
     types = []
     valid_idx = []
 
-
+    meta_data = {}
     Error_dict = {}
     for tern_sys in ternary_sys_list:
         # tern_sys = ["Ba", "Mg", "Si"]
@@ -92,22 +92,30 @@ def main():
             #         float(params["L1_a"]),
             #         float(params["L1_b"])
             #     ]
-            
+            pred_tag = "All fitted"
+            mae = []
+            rmse = []
             for bin_sys in binary_sys_labels:
                 flipped_sys = "-".join(sorted(bin_sys.split('-')))
 
                 if bin_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
                     fitorpred[bin_sys] = "fit"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
                 elif flipped_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
                     fitorpred[bin_sys] = "fit"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
                 elif bin_sys in binary_param_pred_df['system'].tolist():
                     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
                     fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
                 elif flipped_sys in binary_param_pred_df['system'].tolist():
                     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
                     fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
@@ -150,6 +158,15 @@ def main():
                 types.append("non-congruent")
             valid_idx.append(i)
             congruent_temps.append(temp)
+            meta_data['-'.join(sorted_sys)] = {
+                "Fit Type": pred_tag,
+                "type": types[-1],
+                "mpds_temp": congruent_temp,
+                "mpds_phase": congruent_phase,
+                "calculated_temp": temp,
+                "mae": mae,
+                "rmse": rmse,
+            }
             # binary_plot1 = plotter.bin_fig_list[0]
             # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
@@ -170,8 +187,11 @@ def main():
 
     new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_final_{interp}.xlsx"), index=False)
             
+    with open(os.path.join(dump_dir, f"ternary_Gliq_meta_final_{interp}.json"), "w") as f:
+        json.dump(meta_data, f, indent=4)
+
     with open(os.path.join(dump_dir, f"ternary_Gliq_errors_final_{interp}.json"), "w") as f:
-        json.dump(Error_dict, f)
+        json.dump(Error_dict, f, indent=4)
 
 if __name__ == "__main__":
     main()
