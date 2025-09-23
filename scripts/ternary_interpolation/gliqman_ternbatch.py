@@ -95,6 +95,8 @@ def main():
             pred_tag = "All fitted"
             mae = []
             rmse = []
+            norm_mae = []
+            norm_rmse = []
             for bin_sys in binary_sys_labels:
                 flipped_sys = "-".join(sorted(bin_sys.split('-')))
 
@@ -103,11 +105,15 @@ def main():
                     fitorpred[bin_sys] = "fit"
                     mae.append(params["mae"])
                     rmse.append(params["rmse"])
+                    norm_mae.append(params["norm_mae"])
+                    norm_rmse.append(params["norm_rmse"])
                 elif flipped_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
                     fitorpred[bin_sys] = "fit"
                     mae.append(params["mae"])
                     rmse.append(params["rmse"])
+                    norm_mae.append(params["norm_mae"])
+                    norm_rmse.append(params["norm_rmse"])
                 elif bin_sys in binary_param_pred_df['system'].tolist():
                     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
                     fitorpred[bin_sys] = "pred"
@@ -132,6 +138,7 @@ def main():
                                         L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5.0, delta=0.025, fit_or_pred=fitorpred)
             plotter.interpolate()
             plotter.process_data()
+            tern_meta = plotter.ternary_meta
             df_list = plotter.equil_df_list
             concat_df = pd.concat(df_list, ignore_index=True)
             sub_df = concat_df[concat_df["Phase"] == congruent_phase]
@@ -166,7 +173,12 @@ def main():
                 "calculated_temp": temp,
                 "mae": mae,
                 "rmse": rmse,
+                "norm_mae": norm_mae,
+                "norm_rmse": norm_rmse,
+                "ternary_meta": tern_meta,
+                "binary_L_params": binary_L_dict,
             }
+
             # binary_plot1 = plotter.bin_fig_list[0]
             # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
             print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")

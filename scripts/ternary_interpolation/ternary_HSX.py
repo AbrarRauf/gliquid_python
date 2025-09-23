@@ -229,6 +229,7 @@ class ternary_interpolation:
         self.fit_or_pred = kwargs.get('fit_or_pred', {})  # dict of 'fit' or 'pred' for each binary system
         self.L_dict = kwargs.get('L_dict', {}) # adding functionality to pass in a dict of L parameters on construction
         self.L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
+        self.ternary_meta = {}
     
     def init_ref_data(self):
         # initialize reference data for fusion enthalpies and entropies
@@ -372,10 +373,17 @@ class ternary_interpolation:
             entries = [e for e in entries if e.composition.get("Mg", 0) != 149]
         
         pdia = PhaseDiagram(entries)
+
+        # extract the number of ternary compounds from pdia
+        n_ternary_compounds = sum(1 for e in pdia.stable_entries if len(e.composition.elements) == 3)
+        self.ternary_meta['n_ternary_compounds'] = n_ternary_compounds
+        
+
         entries = pdia.stable_entries
         all_atm_fracs = []
         all_form_ens = []
         phases = []
+
         for entry in entries:
             comp_str = entry.composition.reduced_formula
             comp = Composition(comp_str)
@@ -396,6 +404,9 @@ class ternary_interpolation:
 
         for i, arr in enumerate(all_atm_fracs_arr.T):
             tern_mp_dict[f'x{i}'] = arr
+        
+        deepest_formen = min(all_form_ens)
+        self.ternary_meta['deepest_formation_energy'] = deepest_formen
 
         tern_mp_dict['H'] = all_form_ens
         tern_mp_dict['Phase Name'] = phases
