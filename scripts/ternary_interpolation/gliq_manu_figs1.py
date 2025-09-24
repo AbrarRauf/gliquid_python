@@ -554,19 +554,363 @@ def ternary_hull_metrics(include_predicted=True):
     print(f"|Deepest formation energy| range: {df_filtered['abs_deepest_formation_energy'].min():.0f} - {df_filtered['abs_deepest_formation_energy'].max():.0f}")
 
 
-def main():
-    # eutectic_fig()
-    inter_figure()
-    inter_figure_filtered()
-    inter_figure_error_metrics()
+def binary_L_parameter_analysis(include_predicted=True, deviation_metric='mad'):
+    """
+    Analyze variation in binary L parameters across the three binary systems in each ternary.
     
-    # Run hull metrics analysis
-    print("\n=== Ternary Hull Metrics: All Systems ===")
-    ternary_hull_metrics(include_predicted=True)
+    Parameters:
+    include_predicted (bool): If True, include "Contains predicted" systems. 
+                             If False, filter them out.
+    deviation_metric (str): Metric to measure parameter variation. Options:
+                           'mad' - Mean Absolute Deviation
+                           'std' - Standard Deviation
+                           'range' - Range (max - min)
+                           'pairwise' - Pairwise distance metric
+    """
+    import json
     
-    # print("\n=== Ternary Hull Metrics: Filtered Systems ===")
-    # ternary_hull_metrics(include_predicted=False)
+    inter_path = "all_dumps/gliq_manu_test3/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test3/ternary_Gliq_meta_final_linear.json"
 
+    df = pd.read_excel(inter_path)
+
+    # evaluate elements column using ast.literal_eval
+    df['elements'] = df['elements'].apply(lambda x: ast.literal_eval(x))
+    
+    # Load metadata JSON
+    with open(meta_data_path, 'r') as f:
+        meta_data = json.load(f)
+    
+    # Create system identifier from elements list (A-B-C format)
+    df['system_key'] = df['elements'].apply(lambda x: '-'.join(sorted(x)))
+    
+    # Check if system has "Contains predicted" fit type
+    df['contains_pred'] = df['system_key'].apply(
+        lambda x: meta_data.get(x, {}).get('Fit Type') == 'Contains predicted'
+    )
+
+    # Apply filtering based on toggle
+    if include_predicted:
+        df_filtered = df.copy()
+        title_suffix = "All Systems"
+    else:
+        df_filtered = df[df['contains_pred'] == False].copy()
+        title_suffix = "Filtered: Excluding 'Contains predicted'"
+    
+    print(f"Total systems: {len(df)}, Plotting: {len(df_filtered)}")
+    
+    def calculate_parameter_deviation(system_key, param_index, metric):
+        """Calculate deviation metric for a specific L parameter across three binaries"""
+        binary_params = meta_data.get(system_key, {}).get('binary_L_params', {})
+        if not binary_params:
+            return 0.0
+        
+        # Extract the parameter values (first 3 values from each binary system)
+        param_values = []
+        for binary_key, params in binary_params.items():
+            if len(params) >= 4:  # Ensure we have all 4 parameters
+                param_values.append(params[param_index])
+        
+        if len(param_values) < 3:  # Need all 3 binary systems
+            return 0.0
+        
+        param_array = np.array(param_values)
+        
+        # Calculate different deviation metrics
+        if metric == 'mad':
+            # Mean Absolute Deviation
+            mean_val = np.mean(param_array)
+            deviation = np.mean(np.abs(param_array - mean_val))
+        elif metric == 'std':
+            # Standard Deviation
+            deviation = np.std(param_array, ddof=0)  # Population std
+        elif metric == 'range':
+            # Range (max - min)
+            deviation = np.max(param_array) - np.min(param_array)
+        elif metric == 'pairwise':
+            # Pairwise distance metric: sqrt(sum of squared differences between pairs)
+            x1, x2, x3 = param_array[0], param_array[1], param_array[2]
+            deviation = np.sqrt((x1-x2)**2 + (x1-x3)**2 + (x2-x3)**2)
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+        
+        return deviation
+    
+    # Calculate deviation metric for each L parameter
+    metric_suffix = deviation_metric.upper()
+    df_filtered[f'L0_a_{deviation_metric}'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_deviation(x, 0, deviation_metric))
+    df_filtered[f'L0_b_{deviation_metric}'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_deviation(x, 1, deviation_metric))
+    df_filtered[f'L1_b_{deviation_metric}'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_deviation(x, 2, deviation_metric))
+    
+    # Color mapping
+    colors = {'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'}
+    df_filtered['color'] = df_filtered['type'].map(colors)
+    
+    # Scale point sizes based on MAD values (normalize to reasonable range)
+    def scale_sizes(values, min_size=20, max_size=200):
+        if values.max() == values.min() or values.max() == 0:
+            return np.full_like(values, min_size)
+        normalized = (values - values.min()) / (values.max() - values.min())
+        return min_size + normalized * (max_size - min_size)
+    
+    # Create plots for each L parameter
+    metric_names = {
+        'mad': 'Mean Absolute Deviation',
+        'std': 'Standard Deviation', 
+        'range': 'Range',
+        'pairwise': 'Pairwise Distance'
+    }
+    metric_name = metric_names.get(deviation_metric, deviation_metric.upper())
+    
+    l_params = [
+        (f'L0_a_{deviation_metric}', 'L0_a', f'L0_a ({metric_name})'),
+        (f'L0_b_{deviation_metric}', 'L0_b', f'L0_b ({metric_name})'),
+        (f'L1_b_{deviation_metric}', 'L1_b', f'L1_b ({metric_name})')
+    ]
+    
+    for param_col, param_name, param_title in l_params:
+        sizes = scale_sizes(df_filtered[param_col])
+        
+        plt.figure(figsize=(8, 6))
+        plt.scatter(
+            df_filtered['melting_point_k'],
+            df_filtered['gliq_melting_temp'],
+            c=df_filtered['color'],
+            s=sizes,
+            alpha=0.7,
+            edgecolors='black',
+            linewidths=0.5
+        )
+        
+        # Plot the reference y=x line
+        min_val = min(df_filtered['melting_point_k'].min(), df_filtered['gliq_melting_temp'].min())
+        max_val = max(df_filtered['melting_point_k'].max(), df_filtered['gliq_melting_temp'].max())
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x', alpha=0.5)
+        
+        plt.xlabel('MPDS Congruent Melting Temperature (K)')
+        plt.ylabel('Interpolated Melting Temperature (K)')
+        plt.title(f'Point Size by {param_title} Variation - {title_suffix}')
+        plt.xlim(300, 2500)
+        plt.ylim(300, 2500)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print statistics for this parameter
+        print(f"{param_name} {metric_name} range: {df_filtered[param_col].min():.2f} - {df_filtered[param_col].max():.2f}")
+    
+    # Print overall statistics
+    print(f"\nSummary for {title_suffix} using {metric_name}:")
+    print(f"Systems with complete binary L parameters: {len(df_filtered[df_filtered[f'L0_a_{deviation_metric}'] > 0])}")
+    
+    # Add plots for average magnitude of each L parameter
+    def calculate_parameter_avg_magnitude(system_key, param_index):
+        """Calculate average magnitude for a specific L parameter across three binaries"""
+        binary_params = meta_data.get(system_key, {}).get('binary_L_params', {})
+        if not binary_params:
+            return 0.0
+        
+        # Extract the parameter values (first 3 values from each binary system)
+        param_values = []
+        for binary_key, params in binary_params.items():
+            if len(params) >= 4:  # Ensure we have all 4 parameters
+                param_values.append(abs(params[param_index]))  # Take absolute value for magnitude
+        
+        if len(param_values) < 3:  # Need all 3 binary systems
+            return 0.0
+        
+        # Calculate average magnitude
+        avg_magnitude = np.mean(param_values)
+        return avg_magnitude
+    
+    # Calculate average magnitude for each L parameter
+    df_filtered['L0_a_avg_mag'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_avg_magnitude(x, 0))
+    df_filtered['L0_b_avg_mag'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_avg_magnitude(x, 1))
+    df_filtered['L1_b_avg_mag'] = df_filtered['system_key'].apply(lambda x: calculate_parameter_avg_magnitude(x, 2))
+    
+    # Create plots for average magnitude of each L parameter
+    l_params_mag = [
+        ('L0_a_avg_mag', 'L0_a', 'L0_a Average Magnitude'),
+        ('L0_b_avg_mag', 'L0_b', 'L0_b Average Magnitude'),
+        ('L1_b_avg_mag', 'L1_b', 'L1_b Average Magnitude')
+    ]
+    
+    print(f"\n=== Average Magnitude Plots ===")
+    
+    for param_col, param_name, param_title in l_params_mag:
+        sizes = scale_sizes(df_filtered[param_col])
+        
+        plt.figure(figsize=(8, 6))
+        plt.scatter(
+            df_filtered['melting_point_k'],
+            df_filtered['gliq_melting_temp'],
+            c=df_filtered['color'],
+            s=sizes,
+            alpha=0.7,
+            edgecolors='black',
+            linewidths=0.5
+        )
+        
+        # Plot the reference y=x line
+        min_val = min(df_filtered['melting_point_k'].min(), df_filtered['gliq_melting_temp'].min())
+        max_val = max(df_filtered['melting_point_k'].max(), df_filtered['gliq_melting_temp'].max())
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x', alpha=0.5)
+        
+        plt.xlabel('MPDS Congruent Melting Temperature (K)')
+        plt.ylabel('Interpolated Melting Temperature (K)')
+        plt.title(f'Point Size by {param_title} - {title_suffix}')
+        plt.xlim(300, 2500)
+        plt.ylim(300, 2500)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print statistics for this parameter
+        print(f"{param_name} Average Magnitude range: {df_filtered[param_col].min():.2f} - {df_filtered[param_col].max():.2f}")
+    
+    print(f"\nAverage Magnitude Summary for {title_suffix}:")
+    print(f"Systems with complete binary L parameters: {len(df_filtered[df_filtered['L0_a_avg_mag'] > 0])}")
+
+
+def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ternary_Gliq_meta_final_linear.json"):
+    """
+    Plot frequency distributions for L0_a, L0_b, and L1_b parameters across all entries in the metadata JSON.
+    
+    Parameters:
+    meta_data_path (str): Path to the metadata JSON file
+    """
+    
+    # Load metadata JSON
+    with open(meta_data_path, 'r') as f:
+        meta_data = json.load(f)
+    
+    # Collect all L parameter values across all systems and all binaries
+    L0_a_values = []
+    L0_b_values = []
+    L1_b_values = []
+    
+    for system_key, system_data in meta_data.items():
+        binary_params = system_data.get('binary_L_params', {})
+        
+        for binary_key, params in binary_params.items():
+            if len(params) >= 4:  # Ensure we have all 4 parameters
+                L0_a_values.append(params[0])  # L0_a
+                L0_b_values.append(params[1])  # L0_b
+                L1_b_values.append(params[2])  # L1_b (note: you mentioned L1_a but the data shows L1_b)
+    
+    # Convert to numpy arrays for easier handling
+    L0_a_values = np.array(L0_a_values)
+    L0_b_values = np.array(L0_b_values)
+    L1_b_values = np.array(L1_b_values)
+    
+    print(f"Collected {len(L0_a_values)} L parameter sets from {len(meta_data)} ternary systems")
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Plot L0_a distribution
+    axes[0].hist(L0_a_values, bins=50, alpha=0.7, color='tab:blue', edgecolor='black')
+    axes[0].set_xlabel('L0_a Value')
+    axes[0].set_ylabel('Frequency')
+    axes[0].set_title('Distribution of L0_a Parameters')
+    axes[0].grid(True, alpha=0.3)
+    
+    # Add statistics to the plot
+    mean_L0_a = np.mean(L0_a_values)
+    std_L0_a = np.std(L0_a_values)
+    axes[0].axvline(mean_L0_a, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_L0_a:.1f}')
+    axes[0].legend()
+    
+    # Plot L0_b distribution
+    axes[1].hist(L0_b_values, bins=50, alpha=0.7, color='tab:orange', edgecolor='black')
+    axes[1].set_xlabel('L0_b Value')
+    axes[1].set_ylabel('Frequency')
+    axes[1].set_title('Distribution of L0_b Parameters')
+    axes[1].grid(True, alpha=0.3)
+    
+    # Add statistics to the plot
+    mean_L0_b = np.mean(L0_b_values)
+    std_L0_b = np.std(L0_b_values)
+    axes[1].axvline(mean_L0_b, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_L0_b:.1f}')
+    axes[1].legend()
+    
+    # Plot L1_b distribution
+    axes[2].hist(L1_b_values, bins=50, alpha=0.7, color='tab:green', edgecolor='black')
+    axes[2].set_xlabel('L1_b Value')
+    axes[2].set_ylabel('Frequency')
+    axes[2].set_title('Distribution of L1_b Parameters')
+    axes[2].grid(True, alpha=0.3)
+    
+    # Add statistics to the plot
+    mean_L1_b = np.mean(L1_b_values)
+    std_L1_b = np.std(L1_b_values)
+    axes[2].axvline(mean_L1_b, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_L1_b:.1f}')
+    axes[2].legend()
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print detailed statistics
+    print(f"\nL Parameter Statistics:")
+    print(f"L0_a: Mean = {mean_L0_a:.2f}, Std = {std_L0_a:.2f}, Min = {np.min(L0_a_values):.2f}, Max = {np.max(L0_a_values):.2f}")
+    print(f"L0_b: Mean = {mean_L0_b:.2f}, Std = {std_L0_b:.2f}, Min = {np.min(L0_b_values):.2f}, Max = {np.max(L0_b_values):.2f}")
+    print(f"L1_b: Mean = {mean_L1_b:.2f}, Std = {std_L1_b:.2f}, Min = {np.min(L1_b_values):.2f}, Max = {np.max(L1_b_values):.2f}")
+    
+    # Create individual plots for better detail
+    parameters = [
+        (L0_a_values, 'L0_a', 'tab:blue'),
+        (L0_b_values, 'L0_b', 'tab:orange'),
+        (L1_b_values, 'L1_b', 'tab:green')
+    ]
+    
+    for values, param_name, color in parameters:
+        plt.figure(figsize=(8, 6))
+        n, bins, patches = plt.hist(values, bins=50, alpha=0.7, color=color, edgecolor='black')
+        
+        plt.xlabel(f'{param_name} Value')
+        plt.ylabel('Frequency')
+        plt.title(f'Distribution of {param_name} Parameters')
+        plt.grid(True, alpha=0.3)
+        
+        # Add mean line
+        mean_val = np.mean(values)
+        plt.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.1f}')
+        
+        # Add quartiles
+        q25, q75 = np.percentile(values, [25, 75])
+        plt.axvline(q25, color='orange', linestyle=':', linewidth=1, label=f'Q25: {q25:.1f}')
+        plt.axvline(q75, color='orange', linestyle=':', linewidth=1, label=f'Q75: {q75:.1f}')
+        
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+
+def main():
+    # # eutectic_fig()
+    # inter_figure()
+    # inter_figure_filtered()
+    # inter_figure_error_metrics()
+    
+    # # Run hull metrics analysis
+    # ternary_hull_metrics(include_predicted=True)
+    
+    # ternary_hull_metrics(include_predicted=False)
+    
+    # Plot L parameter distributions
+    # plot_L_parameter_distributions()
+    
+    # Run binary L parameter analysis with different deviation metrics
+    # metrics = ['mad', 'std', 'range', 'pairwise']
+    metrics = ['range']
+    
+    for metric in metrics:
+        print(f"\n{'='*50}")
+        print(f"Binary L Parameter Analysis using {metric.upper()}")
+        print(f"{'='*50}")
+        print(f"\n=== All Systems ({metric.upper()}) ===")
+        binary_L_parameter_analysis(include_predicted=True, deviation_metric=metric)
+        
 
 if __name__ == "__main__":
     main()
