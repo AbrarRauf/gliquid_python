@@ -50,6 +50,7 @@ xi, yi = np.meshgrid(xi, yi)
 
 zi = griddata((liquid_df['x0'], liquid_df['x1']), liquid_df['T'], (xi, yi), method='linear')
 
+# Create the main figure with the filled contour plot
 fig = go.Figure(go.Contour(
     x = xi[0], 
     y = yi[:, 0],
@@ -64,6 +65,31 @@ fig = go.Figure(go.Contour(
         coloring = 'heatmap',
         showlines = False,
     )
+))
+
+# Add white isothermal contour lines below the main plot
+# Calculate appropriate contour levels
+temp_range = liquid_df['T'].max() - liquid_df['T'].min()
+contour_levels = np.linspace(liquid_df['T'].min(), liquid_df['T'].max(), 10)
+
+fig.add_trace(go.Contour(
+    x = xi[0], 
+    y = yi[:, 0],
+    z = zi,
+    showscale = False,
+    colorscale = [[0, 'white'], [1, 'white']],  # Force white colorscale
+    line = dict(
+        color = 'white',
+        width = 2),
+    contours = dict(
+        coloring = 'lines',
+        showlines = True,
+        start = liquid_df['T'].min(),
+        end = liquid_df['T'].max(),
+        size = temp_range / 19,  # 9 intervals for 10 contour lines
+    ),
+    hoverinfo = 'skip',  # Disable hover for contour lines
+    name = ''  # Empty name to avoid legend entry
 ))
 
 # Add the scatter plot for solid phases
