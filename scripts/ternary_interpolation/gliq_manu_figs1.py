@@ -213,6 +213,16 @@ def inter_figure():
     )
 
     print(df.head())
+    
+    # Calculate and print RMSE between interpolated and MPDS values
+    differences = df['gliq_melting_temp'] - df['melting_point_k']
+    rmse = np.sqrt(np.mean(differences**2))
+    mae = np.mean(np.abs(differences))
+    std_dev = np.std(differences)
+    print(f"Average RMSE between interpolated and MPDS values: {rmse:.2f} K")
+    print(f"Average MAE between interpolated and MPDS values: {mae:.2f} K")
+    print(f"Standard deviation of differences: {std_dev:.2f} K")
+    
     # Color mapping
     colors = {'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'}
     df['color'] = df['type'].map(colors)
@@ -237,12 +247,12 @@ def inter_figure():
             )
 
     # Toggle label by commenting/uncommenting
-    # texts = []
-    # for _, row in df.iterrows():
-    #     texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+    texts = []
+    for _, row in df.iterrows():
+        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
 
-    # # Adjust text to reduce overlaps
-    # adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+    # Adjust text to reduce overlaps
+    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
@@ -294,6 +304,15 @@ def inter_figure_filtered():
     df_filtered = df[df['contains_pred'] == False].copy()
     
     print(f"Original points: {len(df)}, Filtered points: {len(df_filtered)}")
+    
+    # Calculate and print RMSE between interpolated and MPDS values for filtered data
+    differences_filtered = df_filtered['gliq_melting_temp'] - df_filtered['melting_point_k']
+    rmse_filtered = np.sqrt(np.mean(differences_filtered**2))
+    mae_filtered = np.mean(np.abs(differences_filtered))
+    std_dev_filtered = np.std(differences_filtered)
+    print(f"Average RMSE between interpolated and MPDS values (filtered): {rmse_filtered:.2f} K")
+    print(f"Average MAE between interpolated and MPDS values (filtered): {mae_filtered:.2f} K")
+    print(f"Standard deviation of differences (filtered): {std_dev_filtered:.2f} K")
     
     # Color mapping
     colors = {'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'}
@@ -665,7 +684,7 @@ def binary_L_parameter_analysis(include_predicted=True, deviation_metric='mad'):
     l_params = [
         (f'L0_a_{deviation_metric}', 'L0_a', f'L0_a ({metric_name})'),
         (f'L0_b_{deviation_metric}', 'L0_b', f'L0_b ({metric_name})'),
-        (f'L1_b_{deviation_metric}', 'L1_b', f'L1_b ({metric_name})')
+        (f'L1_b_{deviation_metric}', 'L1_b', f'L1_a ({metric_name})')
     ]
     
     for param_col, param_name, param_title in l_params:
@@ -889,7 +908,7 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 def main():
     # # eutectic_fig()
     # inter_figure()
-    # inter_figure_filtered()
+    inter_figure_filtered()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis
@@ -904,12 +923,12 @@ def main():
     # metrics = ['mad', 'std', 'range', 'pairwise']
     metrics = ['range']
     
-    for metric in metrics:
-        print(f"\n{'='*50}")
-        print(f"Binary L Parameter Analysis using {metric.upper()}")
-        print(f"{'='*50}")
-        print(f"\n=== All Systems ({metric.upper()}) ===")
-        binary_L_parameter_analysis(include_predicted=True, deviation_metric=metric)
+    # for metric in metrics:
+    #     print(f"\n{'='*50}")
+    #     print(f"Binary L Parameter Analysis using {metric.upper()}")
+    #     print(f"{'='*50}")
+    #     print(f"\n=== All Systems ({metric.upper()}) ===")
+    #     binary_L_parameter_analysis(include_predicted=True, deviation_metric=metric)
         
 
 if __name__ == "__main__":

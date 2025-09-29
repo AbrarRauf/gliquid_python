@@ -14,14 +14,13 @@ if not os.path.exists(dump_dir):
 def plot_ternary_system():
     # Bi-Cd-Sn system
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
-    tern_sys = ["Nd", "Fe", "B"]
+    tern_sys = ["Er", "Si", "Co"]
     tern_param_format = 'combined'
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v17_comb1S_tau10k_predictions_rf_optimized.xlsx")
-
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
 
     sorted_sys = sorted(tern_sys)
@@ -82,11 +81,18 @@ def plot_ternary_system():
     print(binary_L_dict)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 1000], T_incr=5, delta=0.01, fit_or_pred=fitorpred)
+                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5, delta=0.025, fit_or_pred=fitorpred)
 
     plotter.interpolate()
     plotter.process_data()
+
     tern_fig = plotter.plot_ternary()
+    print(plotter.plotting_df)
+    # order by index
+    plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)
+    # extract the first 5 named columns to a csv called ternary_gtx_test.csv in dump_dir
+    plotter.plotting_df.iloc[:, :5].to_csv(dump_dir + "ternary_gtx_test.csv", index=False)
+    exit()
     # ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{tern_param_format}_system.html', auto_open=True)
     ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_trial_system.html', auto_open=True)
 
