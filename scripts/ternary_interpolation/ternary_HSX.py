@@ -7,6 +7,7 @@ import time
 import sys
 import json
 import numpy as np
+np.set_printoptions(legacy='1.25')
 import pandas as pd
 import sympy as sp
 import plotly.express as px
@@ -240,41 +241,6 @@ class ternary_interpolation:
         tern_entropy = tern_enthalpy/tern_temp
         self.ref_data = {'H': tern_enthalpy, 'S': tern_entropy, 'T': tern_temp}
 
-    def retrieve_system_parameters(self, fitted, df_fitted, df_predicted):
-        # retrieve the L parameters for the binary systems
-        def get_parameters(df, system, invert=False):
-            if invert:
-                system = invert_substrings(system)
-            try:
-                params = df.loc[df['system'] == system, ['L0_a', 'L0_b', 'L1_a', 'L1_b']].values[0]
-                if invert:
-                    params[2:] *= -1 
-                return params
-            except IndexError:
-                print(f"Predicted parameters for {system} not found. Terminating!")
-                # return NaN params
-                return [np.nan, np.nan, np.nan, np.nan]
-
-        for sys in self.binary_sys:
-            target_df = None
-            param_key = 'errors' if fitted == 1 else 'continuous'
-            if sys in df_fitted['system'].values or invert_substrings(sys) in df_fitted['system'].values:
-                invert = sys not in df_fitted['system'].values
-                system = invert_substrings(sys) if invert else sys
-                result = df_fitted.loc[df_fitted['system'] == system, param_key].values[0]
-                target_df = df_fitted if (result == 'none' if fitted == 1 else result) else df_predicted
-
-                print(f"Using {'fitted' if target_df is df_fitted else 'predicted'} params for {sys}")
-                self.L_dict[sys] = get_parameters(target_df, sys, invert=invert)
-            else:
-                print(f"System {sys} not found")
-
-        # Interaction terms
-        # print("Binary interaction terms:")
-        # for key, val in self.L_dict.items():
-        #     print(f"{key}: {val}")
-
-        return target_df
 
     def ternary_interpolation(self): # maybe there's a better name for this than the same as the class name?
         # interpolate the ternary system using the binary interaction parameters
@@ -285,11 +251,7 @@ class ternary_interpolation:
         S_A, S_B, S_C = self.ref_data['S']
 
         if not all(sys in self.L_dict.keys() for sys in self.binary_sys): # only do this if L_dict is not already populated
-            # df_fitted = pd.read_excel(os.path.join(self.direct, 'fitted_system_data_new.xlsx'))
-            df_fitted = pd.read_excel(os.path.join(self.direct, 'composite_fit_results-trimmed+carbides.xlsx'))
-            # df_fitted = pd.read_excel(os.path.join(self.direct, 'composite_fit_results.xlsx'))
-            df_predicted = pd.read_excel(os.path.join(self.direct, 'predicted_params_final.xlsx'))
-            self.bin_df = self.retrieve_system_parameters(1, df_fitted, df_predicted) # '1' used as an enum?
+            raise ValueError("L_dict does not contain parameters for all binary systems.")
 
         if self.interp_type == 'linear':
             wAB, wBC, wCA = 1, 1, 1
@@ -859,16 +821,16 @@ class ternary_gtx_plotter(ternary_interpolation):
             showlegend=False
         ))
         
-        fig.add_trace(go.Scatter3d(
-            x=[-0.02, 0.48, 0.98, -0.02],
-            y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
-            z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
-            mode='text',
-        text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
-            textposition='top center',
-            showlegend=False,
-            textfont=dict(size=12)
-        ))
+        # fig.add_trace(go.Scatter3d(
+        #     x=[-0.02, 0.48, 0.98, -0.02],
+        #     y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
+        #     z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
+        #     mode='text',
+        # text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
+        #     textposition='top center',
+        #     showlegend=False,
+        #     textfont=dict(size=12)
+        # ))
 
          
         fig.update_layout(
@@ -901,4 +863,27 @@ class ternary_gtx_plotter(ternary_interpolation):
         )
 
         return fig
+    
+    def get_inter_melting_temps(self, interphases_for_melting: List[str]):
+        if not hasattr(self, 'equil_df_list'):
+            raise Exception("You must run the interpolate() and process_data() methods before getting melting temperatures.")
+
+        self.plotting_df = self.plotting_df.sort_index().reset_index(drop=True)
+        df_list = self.equil_df_list
+        concat_df = pd.concat(df_list, ignore_index=True)
+        melting_temps = {}
+        for phase in interphases_for_melting:
+            if phase not in self.phases:
+                raise ValueError(f"Phase '{phase}' not found in the system phases: {self.phases}")
+            sub_df = concat_df[concat_df['Phase'] == phase]
+            if sub_df.empty:
+                print(f"No data found for phase '{phase}'. Skipping.")
+                continue
+            sub_df = sub_df.sort_values(by='T', ascending=False)
+            sub_df = sub_df.iloc[0]
+            temp = sub_df['T'] 
+            melting_temps[phase] = temp
+
+        return melting_temps
+            
 

@@ -192,8 +192,8 @@ def eutectic_fig():
 
 
 def inter_figure(): 
-    inter_path = "all_dumps/gliq_manu_test3/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test3/ternary_Gliq_meta_final_linear.json"
+    inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
 
@@ -247,12 +247,12 @@ def inter_figure():
             )
 
     # Toggle label by commenting/uncommenting
-    texts = []
-    for _, row in df.iterrows():
-        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+    # texts = []
+    # for _, row in df.iterrows():
+    #     texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
 
-    # Adjust text to reduce overlaps
-    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+    # # Adjust text to reduce overlaps
+    # adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
@@ -280,8 +280,8 @@ def inter_figure():
 
 
 def inter_figure_filtered():
-    inter_path = "all_dumps/gliq_manu_test2/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test3/ternary_Gliq_meta_final_linear.json"
+    inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
 
@@ -907,7 +907,7 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 def main():
     # # eutectic_fig()
-    # inter_figure()
+    inter_figure()
     inter_figure_filtered()
     # inter_figure_error_metrics()
     

@@ -14,7 +14,7 @@ if not os.path.exists(dump_dir):
 def plot_ternary_system():
     # Bi-Cd-Sn system
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
-    tern_sys = ["Er", "Si", "Co"]
+    tern_sys = ["Cd", "Sn", "As"]
     tern_param_format = 'combined'
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
@@ -78,24 +78,44 @@ def plot_ternary_system():
     #         params["L1_b"]
     #     ]
 
+    l0_tern = -70000
+
     print(binary_L_dict)
+    # plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
+    #                               L_dict=binary_L_dict, temp_slider=[0, -250], T_incr=10, delta=0.025, fit_or_pred=fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5, delta=0.025, fit_or_pred=fitorpred)
-
+                                  L_dict=binary_L_dict, temp_slider=[0, -250], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     plotter.process_data()
 
+    print(plotter.equil_df_list)
     tern_fig = plotter.plot_ternary()
-    print(plotter.plotting_df)
+
+    # update layout and remove axis and background
+    tern_fig.update_layout(
+        scene = dict(
+            zaxis_visible=False,
+            xaxis_visible=False,
+            yaxis_visible=False,
+            bgcolor='white'
+        )
+    )
+
+    print(plotter.equil_df_list)
+
+    inter_list = ["CdSnAs2"]
+    melting_temps = plotter.get_inter_melting_temps(inter_list)
+    print(melting_temps)
+
     # order by index
     plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)
     # extract the first 5 named columns to a csv called ternary_gtx_test.csv in dump_dir
-    plotter.plotting_df.iloc[:, :5].to_csv(dump_dir + "ternary_gtx_test.csv", index=False)
-    exit()
+    plotter.plotting_df.iloc[:, :5].to_csv(dump_dir + "ternary_gtx_test3.csv", index=False)
     # ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{tern_param_format}_system.html', auto_open=True)
-    ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_trial_system.html', auto_open=True)
+    ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_eut_trial_system.html', auto_open=True)
 
+    print("For l0_tern =", l0_tern, "Melting point", melting_temps["CdSnAs2"] + 273.15, "K")
 
 if __name__ == "__main__":
     plot_ternary_system()

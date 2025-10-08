@@ -35,8 +35,8 @@ except ImportError:
     print("SHAP library not available. Feature importance analysis will use Random Forest importance only.")
     print("To install SHAP: pip install shap")
 
-inter_path = "all_dumps/gliq_manu_test3/ternary_Gliq_mps_final_linear.xlsx"
-meta_data_path = "all_dumps/gliq_manu_test3/ternary_Gliq_meta_final_linear.json"
+inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
 
 def extract_features_from_metadata():

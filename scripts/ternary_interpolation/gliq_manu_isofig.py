@@ -8,7 +8,7 @@ from scipy.interpolate import griddata
 
 dump_dir = "all_dumps/zrte_spec/"
 # df = pd.read_csv("ternary_gtx_test.csv")
-df = pd.read_csv(dump_dir + "ternary_gtx_test.csv")
+df = pd.read_csv(dump_dir + "ternary_gtx_test2.csv")
 
 
 print(df)
@@ -102,8 +102,8 @@ fig.add_trace(go.Scattergl(
         color=solid_df['T'],
         colorscale='viridis', # Use the same colorscale as contour
         line=dict(width=2, color='black'), # Black border
-        cmin=liquid_df['T'].min(), # Ensure consistent coloring with contour
-        cmax=liquid_df['T'].max()  # Ensure consistent coloring with contour
+        cmin=liquid_df['T'].min(), 
+        cmax=liquid_df['T'].max()  
     ),
     text=solid_df['Phase'],
     hoverinfo='x+y+text',
