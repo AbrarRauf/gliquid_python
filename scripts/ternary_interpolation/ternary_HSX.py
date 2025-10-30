@@ -435,7 +435,11 @@ class ternary_gtx_plotter(ternary_interpolation):
         # Generate a random color array with at least 100 options
         def random_color():
             return f"#{random.randint(0, 0xFFFFFF):06x}"
-        color_array = [random_color() for _ in range(100)]
+        # color_array = [random_color() for _ in range(100)]
+
+        pastel_colors = px.colors.qualitative.Vivid
+        color_array = pastel_colors * (len(solid_phases) // len(pastel_colors) + 1)
+
         self.color_map = dict(zip(solid_phases, color_array))
         self.color_map['L'] = 'cornflowerblue'
 
