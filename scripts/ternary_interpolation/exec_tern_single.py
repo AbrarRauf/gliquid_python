@@ -15,7 +15,9 @@ def plot_ternary_system():
     # Bi-Cd-Sn system
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     # tern_sys = ["Cd", "Sn", "As"]
-    tern_sys = ["Zr", "Te", "Bi"]
+    # tern_sys = ["Zr", "Te", "Bi"]
+    # tern_sys = ["Ge", "Ti", "Bi"]
+    tern_sys = ["Fe", "Ce", "Si"]
     tern_param_format = 'combined'
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
@@ -63,21 +65,7 @@ def plot_ternary_system():
             float(params["L1_b"])
         ]
 
-    # for sys in binary_sys_labels:
-    #     flipped_sys = "-".join(sorted(sys.split("-")))
-    #     print(flipped_sys)
-    #     json_path = os.path.join(read_dir, f"{sys}_{bin_param_format}_fit_results.json")
-    #     if not os.path.exists(json_path):
-    #         json_path = os.path.join(read_dir, f"{flipped_sys}_{bin_param_format}_fit_results.json")
-            
-    #     with open(json_path, "r") as f:
-    #         params = json.load(f)
-    #     binary_L_dict[sys] = [
-    #         params["L0_a"],
-    #         params["L0_b"],
-    #         params["L1_a"],
-    #         params["L1_b"]
-    #     ]
+
 
     l0_tern = 0.0
     # l0_tern = 53000
@@ -87,16 +75,17 @@ def plot_ternary_system():
     # plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
     #                               L_dict=binary_L_dict, temp_slider=[0, -250], T_incr=10, delta=0.025, fit_or_pred=fitorpred)
 
+    print(fitorpred)
+
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
                                   L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=10, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     print(plotter.hsx_df)
 
     # manual adjustment of solid phase entropies
-    s_zrte = -1.57
-    # add a manual entropy to the S column for Phase Name = 'ZrTe' in hsx_df
-    plotter.hsx_df.loc[plotter.hsx_df['Phase Name'] == 'ZrTe', 'S'] = s_zrte
-    print(plotter.hsx_df)
+    # s_zrte = -1.57
+    # plotter.hsx_df.loc[plotter.hsx_df['Phase Name'] == 'ZrTe', 'S'] = s_zrte
+    # print(plotter.hsx_df)
 
     plotter.process_data()
 
@@ -111,16 +100,19 @@ def plot_ternary_system():
     #         bgcolor='white'
     #     )
     # )
+    bin_fig_list = plotter.bin_fig_list
+    for i, bin_fig in enumerate(bin_fig_list):
+        bin_fig.show()
 
     print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    spec_inter = "ZrTe"
-    inter_list = [spec_inter]
-    melting_temps = plotter.get_inter_melting_temps(inter_list)
-    print(melting_temps)
+    # spec_inter = "ZrTe"
+    # inter_list = [spec_inter]
+    # melting_temps = plotter.get_inter_melting_temps(inter_list)
+    # print(melting_temps)
     # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
+    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
 
     # order by index
     plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)

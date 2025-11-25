@@ -247,12 +247,12 @@ def inter_figure():
             )
 
     # Toggle label by commenting/uncommenting
-    # texts = []
-    # for _, row in df.iterrows():
-    #     texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+    texts = []
+    for _, row in df.iterrows():
+        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
 
-    # # Adjust text to reduce overlaps
-    # adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+    # Adjust text to reduce overlaps
+    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
@@ -302,6 +302,11 @@ def inter_figure_filtered():
 
     # Filter out points that would have black edges (Contains predicted)
     df_filtered = df[df['contains_pred'] == False].copy()
+
+    print(df_filtered)
+    print(df_filtered["reduced_formula"].to_list())
+
+    print(len(df_filtered))
     
     print(f"Original points: {len(df)}, Filtered points: {len(df_filtered)}")
     

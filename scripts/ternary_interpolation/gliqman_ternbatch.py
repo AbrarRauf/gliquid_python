@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test4/"
+dump_dir = "all_dumps/gliq_manu_test7_linear/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -44,7 +44,8 @@ def main():
     interp = "linear"
 
     binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v18_10-2_benchmarked_ver.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")
     ternary_sys_list = ternary_df["elements"].tolist()
     ternary_sys_list = [ast.literal_eval(e) if isinstance(e, str) else e for e in ternary_sys_list]

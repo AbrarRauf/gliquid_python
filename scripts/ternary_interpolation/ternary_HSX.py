@@ -41,7 +41,7 @@ x1_sym, x2_sym, t_sym, w12_sym, w23_sym, w31_sym, a_sym, b_sym = sp.symbols('x1 
 
 _L_LINEAR_EXPR = linear_expr(a_sym, b_sym)
 _L_EXP_EXPR = exponential_expr(a_sym, b_sym)
-_L_LIN_EXP_EXPR = combined_expr(a_sym, b_sym, sp.Integer(10000))
+_L_LIN_EXP_EXPR = combined_expr(a_sym, b_sym, sp.Integer(8000))
 
 def build_ternary_thermodynamic_expressions(
     x1=x1_sym, x2=x2_sym, t=t_sym,
