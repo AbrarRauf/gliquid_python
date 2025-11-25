@@ -17,7 +17,7 @@ def plot_ternary_system():
     # tern_sys = ["Cd", "Sn", "As"]
     # tern_sys = ["Zr", "Te", "Bi"]
     # tern_sys = ["Ge", "Ti", "Bi"]
-    tern_sys = ["Fe", "Ce", "Si"]
+    tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
@@ -42,6 +42,7 @@ def plot_ternary_system():
     fitorpred = {}
     for bin_sys in binary_sys_labels:
         flipped_sys = "-".join(sorted(bin_sys.split('-')))
+        order_changed = (bin_sys != flipped_sys)
 
         if bin_sys in binary_param_df['system'].tolist():
             params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
@@ -58,12 +59,18 @@ def plot_ternary_system():
         else:
             raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
-        binary_L_dict[bin_sys] = [
-            float(params["L0_a"]),
-            float(params["L0_b"]),
-            float(params["L1_a"]),
-            float(params["L1_b"])
-        ]
+        # Extract parameters and flip L1 signs if order was changed
+        L0_a = float(params["L0_a"])
+        L0_b = float(params["L0_b"])
+        L1_a = float(params["L1_a"])
+        L1_b = float(params["L1_b"])
+        
+        if order_changed:
+            # Flip L1 parameter signs when element order is reversed
+            L1_a = -L1_a
+            L1_b = -L1_b
+        
+        binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
 
 
 

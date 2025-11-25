@@ -386,8 +386,20 @@ class ternary_interpolation:
         # add binary data to the ternary data and plot the binaries (optional)
         bin_fig_list = []
         def process_system(sys_name):
-            params = self.L_dict[sys_name]
-            sys = BinaryLiquid.from_cache(input="-".join(sorted(sys_name.split('-'))), params=params, param_format=self.param_format,)
+            params = self.L_dict[sys_name].copy()
+            
+            # Check if the system name is in alphabetical order
+            components = sys_name.split('-')
+            alphabetical_order = '-'.join(sorted(components))
+            
+            # If not alphabetical, un-flip L1 parameters since BinaryLiquid.from_cache will flip them
+            if sys_name != alphabetical_order:
+                if self.param_format != 'exponential':
+                    params[2:] = [-1 * p for p in params[2:]]
+                else:
+                    params[2] *= -1
+            
+            sys = BinaryLiquid.from_cache(input=sys_name, params=params, param_format=self.param_format,)
             data = sys.update_phase_points()
             fit_type = self.fit_or_pred[sys_name] 
             if fit_type == 'fit':
