@@ -6,65 +6,249 @@ import json
 import pandas as pd
 import numpy as np
 import ast
+from scipy.optimize import minimize_scalar, brentq
 
 dump_dir = "all_dumps/gliq_manu_test7_linear/"
+final_dir = "all_dumps/gliq_manu_test7_correction/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
 
+if not os.path.exists(final_dir):
+    os.makedirs(final_dir)
+
+
+# Set to a specific formula to test a single system, or None to process all
+# TEST_SINGLE_FORMULA = "CdSnAs2"  # Example: "CdSnAs2" or None
+TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+
+
+def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, interp, 
+                      congruent_phase, target_temp, initial_delta_T, max_iterations=10):
+    """
+    Optimize l0_tern to minimize temperature error using adaptive iterative approach.
+    
+    Args:
+        tern_sys: List of elements in ternary system
+        binary_L_dict: Dictionary of binary L parameters
+        fitorpred: Dictionary indicating fit or pred for each binary
+        tern_param_format: Parameter format (e.g., 'combined')
+        interp: Interpolation type (e.g., 'linear')
+        congruent_phase: Phase formula to optimize
+        target_temp: Target melting temperature in K
+        initial_delta_T: Initial temperature error (predicted - actual)
+        max_iterations: Maximum optimization iterations
+    
+    Returns:
+        tuple: (optimal_l0_tern, final_predicted_temp, success_flag, error_message)
+    """
+    
+    # Check if optimization is needed
+    acceptable_error = 10.0  # +/- 10K
+    
+    if abs(initial_delta_T) <= acceptable_error:
+        print(f"\n  Initial error ({initial_delta_T:+.1f}K) already within acceptable range. Skipping optimization.")
+        return 0.0, target_temp + initial_delta_T, True, "Success - no optimization needed", None
+    
+    def evaluate_temp(l0_tern_value):
+        """Evaluate predicted temperature for a given l0_tern value."""
+        error_details = {}
+        try:
+            print(f"    Testing l0_tern = {l0_tern_value:.0f} J/mol...", end=" ")
+            
+            plotter = ternary_gtx_plotter(
+                tern_sys, data_dir, 
+                interp_type=interp, 
+                param_format=tern_param_format,
+                L_dict=binary_L_dict, 
+                temp_slider=[0, 0], 
+                T_incr=10, 
+                delta=0.025, 
+                fit_or_pred=fitorpred,
+                L_tern=[l0_tern_value, 0]
+            )
+            
+            error_details['stage'] = 'interpolation'
+            plotter.interpolate()
+            
+            error_details['stage'] = 'process_data'
+            plotter.process_data()
+
+            error_details['stage'] = 'plot_ternary'
+            tern_fig = plotter.plot_ternary()
+            
+            error_details['stage'] = 'get_melting_temps'
+            inter_list = [congruent_phase]
+            melting_temps = plotter.get_inter_melting_temps(inter_list)
+            
+            if melting_temps and congruent_phase in melting_temps:
+                # get_inter_melting_temps returns temperature in CELSIUS
+                # Convert to Kelvin for comparison with target_temp
+                temp_result_celsius = melting_temps[congruent_phase]
+                temp_result_kelvin = temp_result_celsius + 273.15
+                print(f"T = {temp_result_kelvin:.1f}K (error: {temp_result_kelvin - target_temp:+.1f}K)")
+                return temp_result_kelvin, None
+            else:
+                error_msg = f"Phase '{congruent_phase}' not found in results. Available: {list(melting_temps.keys()) if melting_temps else 'None'}"
+                print(f"PHASE NOT FOUND")
+                return None, error_msg
+                
+        except Exception as e:
+            error_msg = f"Error at {error_details.get('stage', 'unknown stage')}: {str(e)}"
+            print(f"ERROR: {str(e)[:50]}...")
+            return None, error_msg
+    
+    print(f"\n  Starting iterative optimization...")
+    print(f"  Initial error: {initial_delta_T:+.1f}K (target ≤ ±{acceptable_error:.0f}K)")
+    
+    # Adaptive iterative optimization
+    current_l0 = 0.0
+    current_delta_T = initial_delta_T
+    iteration = 0
+    error_log = []
+    
+    best_l0 = 0.0
+    best_temp = target_temp + initial_delta_T
+    best_error = abs(initial_delta_T)
+    
+    failure_stages = []  # Track stages where failures occurred
+    
+    while iteration < max_iterations:
+        iteration += 1
+        print(f"\n  Iteration {iteration}/{max_iterations}:")
+        
+        # Calculate correction based on current error
+        # delta_T = predicted - actual
+        # If delta_T > 0 (predicted too high), need negative l0_tern
+        # If delta_T < 0 (predicted too low), need positive l0_tern
+        correction_ratio = -800  # J/mol per K
+        l0_correction = correction_ratio * current_delta_T
+        
+        # Apply correction
+        test_l0 = current_l0 + l0_correction
+        
+        print(f"    Current l0_tern: {current_l0:.0f} J/mol")
+        print(f"    Current error: {current_delta_T:+.1f}K")
+        print(f"    Applying correction: {l0_correction:+.0f} J/mol")
+        
+        # Evaluate new l0_tern value
+        temp_result, error_msg = evaluate_temp(test_l0)
+        
+        if temp_result is None:
+            error_log.append((test_l0, error_msg))
+            # Extract failure stage from error message
+            if 'Error at' in error_msg:
+                stage = error_msg.split('Error at ')[1].split(':')[0]
+                failure_stages.append(stage)
+            print(f"    Failed to evaluate - trying reduced correction...")
+            
+            # Try smaller correction if full correction failed
+            for scale_factor in [0.5, 0.25]:
+                reduced_correction = l0_correction * scale_factor
+                test_l0_reduced = current_l0 + reduced_correction
+                print(f"    Trying {scale_factor*100:.0f}% correction: {reduced_correction:+.0f} J/mol")
+                
+                temp_result, error_msg = evaluate_temp(test_l0_reduced)
+                if temp_result is not None:
+                    test_l0 = test_l0_reduced
+                    break
+                else:
+                    error_log.append((test_l0_reduced, error_msg))
+                    if 'Error at' in error_msg:
+                        stage = error_msg.split('Error at ')[1].split(':')[0]
+                        failure_stages.append(stage)
+            
+            if temp_result is None:
+                print(f"    All attempts failed in this iteration")
+                break
+        
+        # Update tracking
+        new_delta_T = temp_result - target_temp
+        new_error = abs(new_delta_T)
+        
+        if new_error < best_error:
+            best_error = new_error
+            best_l0 = test_l0
+            best_temp = temp_result
+        
+        print(f"    New error: {new_delta_T:+.1f}K (|{new_error:.1f}K|)")
+        
+        # Check if acceptable
+        if new_error <= acceptable_error:
+            print(f"\n  ✓ Converged! Final error: {new_delta_T:+.1f}K")
+            return best_l0, best_temp, True, "Success", None
+        
+        # Check if we're making progress
+        if abs(new_delta_T) >= abs(current_delta_T) * 0.95:
+            # Not making sufficient progress
+            print(f"    Progress stalled (error reduction < 5%)")
+            break
+        
+        # Update for next iteration
+        current_l0 = test_l0
+        current_delta_T = new_delta_T
+    
+    # Did not converge within iterations
+    most_common_failure = None
+    if failure_stages:
+        from collections import Counter
+        failure_counts = Counter(failure_stages)
+        most_common_failure = failure_counts.most_common(1)[0][0]
+    
+    if best_error < abs(initial_delta_T):
+        error_message = f"Partial success (error: {best_error:.1f}K, improved from {abs(initial_delta_T):.1f}K)"
+        print(f"\n  Partial success - best error: {best_error:.1f}K")
+    else:
+        error_message = f"Failed - no improvement (error: {best_error:.1f}K)"
+        print(f"\n  ✗ Failed - no improvement achieved")
+    
+    if error_log:
+        print(f"\n  Errors encountered: {len(error_log)}")
+        if most_common_failure:
+            print(f"  Most common failure stage: {most_common_failure}")
+    
+    return best_l0, best_temp, False, error_message, most_common_failure
+
+
 def main():
-    '''ERROR ANALYSIS'''
-    # # read in error json file from dump_dir
-    # with open(os.path.join(dump_dir, f"ternary_Gliq_errors_linear.json"), "r") as f:
-    #     Error_dict = json.load(f)
-
-
-    # # initialize a dataframe
-    # error_df = pd.DataFrame.from_dict(Error_dict, orient="index", columns=["error_message"])
-    # error_df.index.name = "system"
-    # error_df.reset_index(inplace=True)
-
-    # print(error_df)
-
-    # # extract the unique error messages to a list
-    # unique_errors = error_df["error_message"].unique().tolist()
-    # print(unique_errors)
-
-    # spec_err = unique_errors[1]
-
-    # # extract these systems to a list
-    # spec_err_systems = error_df[error_df["error_message"] == spec_err]["system"].tolist()
-    # print(spec_err_systems)
-    # print(len(spec_err_systems))
-
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
     interp = "linear"
 
     binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
-    ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")
-    ternary_sys_list = ternary_df["elements"].tolist()
-    ternary_sys_list = [ast.literal_eval(e) if isinstance(e, str) else e for e in ternary_sys_list]
+    ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx")
     
-    system_list = binary_param_df["system"].tolist()
+    # Filter for single system testing if specified
+    if TEST_SINGLE_FORMULA is not None:
+        ternary_df = ternary_df[ternary_df['reduced_formula'] == TEST_SINGLE_FORMULA]
+        if len(ternary_df) == 0:
+            print(f"ERROR: Formula '{TEST_SINGLE_FORMULA}' not found in the dataset!")
+            print(f"Available formulas: {list(ternary_df['reduced_formula'].unique())[:10]}...")
+            return
+        print(f"\n*** TESTING MODE: Processing only {TEST_SINGLE_FORMULA} ***\n")
     
-    congruent_temps = []
-    types = []
-    valid_idx = []
-
-    meta_data = {}
-    Error_dict = {}
-    for tern_sys in ternary_sys_list:
-        # tern_sys = ["Ba", "Mg", "Si"]
-        # tern_sys = ["Ce", "Fe", "Si"]
-        i = ternary_sys_list.index(tern_sys)
-        print(f"System {tern_sys} with index {i}")
-        congruent_temp = ternary_df.iloc[i]["melting_point_k"]
-        congruent_phase = ternary_df.iloc[i]["reduced_formula"]
+    # Prepare results storage
+    results_list = []
+    
+    # Prepare results storage
+    results_list = []
+    
+    for idx, row in ternary_df.iterrows():
+        tern_sys = ast.literal_eval(row["elements"]) if isinstance(row["elements"], str) else row["elements"]
+        congruent_phase = row["reduced_formula"]
+        actual_temp = row["melting_point_k"]
+        initial_gliq_temp = row["gliq_melting_temp"]
+        initial_delta_T = initial_gliq_temp - actual_temp
+        
+        print(f"\n{'='*70}")
+        print(f"Processing {congruent_phase} (system: {tern_sys})")
+        print(f"Target: {actual_temp:.1f}K, Initial predicted: {initial_gliq_temp:.1f}K")
+        print(f"Initial error: {initial_delta_T:+.1f}K")
+        print(f"{'='*70}")
+        
         try:
             sorted_sys = sorted(tern_sys)
             binary_sys_labels = [
@@ -77,23 +261,6 @@ def main():
             binary_L_dict = {}
             fitorpred = {}
 
-            # for bin_sys in binary_sys_labels:
-            #     flipped_sys = "-".join(sorted(bin_sys.split("-")))
-            #     print(flipped_sys)
-
-            #     if bin_sys in binary_param_df["system"].tolist():
-            #         params = binary_param_df[binary_param_df["system"] == bin_sys].iloc[0]
-            #     elif flipped_sys in binary_param_df["system"].tolist():
-            #         params = binary_param_df[binary_param_df["system"] == flipped_sys].iloc[0]
-            #     else:
-            #         raise Exception("System not in df")
-
-            #     binary_L_dict[bin_sys] = [
-            #         float(params["L0_a"]),
-            #         float(params["L0_b"]),
-            #         float(params["L1_a"]),
-            #         float(params["L1_b"])
-            #     ]
             pred_tag = "All fitted"
             mae = []
             rmse = []
@@ -141,77 +308,82 @@ def main():
                 
                 binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
 
-            print(binary_L_dict)
-            plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
-                                        L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5.0, delta=0.025, fit_or_pred=fitorpred)
-            plotter.interpolate()
-            plotter.process_data()
-            tern_meta = plotter.ternary_meta
-            df_list = plotter.equil_df_list
-            concat_df = pd.concat(df_list, ignore_index=True)
-            sub_df = concat_df[concat_df["Phase"] == congruent_phase]
-            tern_fig = plotter.plot_ternary()
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
-            if sub_df.empty:
-                raise Exception("MPDS congruent phase not on the hull!")
-
-            sub_df = sub_df.sort_values(by="T", ascending=False)
-            sub_df = sub_df.iloc[0]
-            comp = [sub_df["x0"], sub_df["x1"]]
-            temp = sub_df["T"] + 273.15
-            print(concat_df)
-            sub_df2 = concat_df[(concat_df["Phase"] == "L") &
-                                (np.isclose(concat_df["x0"], comp[0], rtol=0, atol=0.025)) &
-                                (np.isclose(concat_df["x1"], comp[1], rtol=0, atol=0.025))]
-            sub_df2 = sub_df2.sort_values(by="T", ascending=True)
-            sub_df2 = sub_df2.iloc[0]
-            temp2 = sub_df2["T"] + 273.15
-            print(temp, temp2)
-            if abs(temp - temp2) < 20:
-                types.append("congruent")
-            else:
-                types.append("non-congruent")
-            valid_idx.append(i)
-            congruent_temps.append(temp)
-            meta_data['-'.join(sorted_sys)] = {
-                "Fit Type": pred_tag,
-                "type": types[-1],
-                "mpds_temp": congruent_temp,
-                "mpds_phase": congruent_phase,
-                "calculated_temp": temp,
-                "mae": mae,
-                "rmse": rmse,
-                "norm_mae": norm_mae,
-                "norm_rmse": norm_rmse,
-                "ternary_meta": tern_meta,
-                "binary_L_params": binary_L_dict,
-            }
-
-            # binary_plot1 = plotter.bin_fig_list[0]
-            # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
-            print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
-
-        except Exception as e:
-            print(f"Error in system {'-'.join(sorted_sys)} with index {i}: {e}")
-            Error_dict['-'.join(sorted_sys)] = str(e)
-
-    print(congruent_temps)
-    print(types)
-    print(valid_idx)
-    print(Error_dict)
-
-    new_df = ternary_df.iloc[valid_idx]
-    new_df["gliq_melting_temp"] = congruent_temps
-    new_df["type"] = types
-    print(new_df)
-
-    new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_final_{interp}.xlsx"), index=False)
+            # Run optimization
+            optimal_l0, final_temp, success, error_msg, failure_stage = optimize_l0_tern(
+                tern_sys=tern_sys,
+                binary_L_dict=binary_L_dict,
+                fitorpred=fitorpred,
+                tern_param_format=tern_param_format,
+                interp=interp,
+                congruent_phase=congruent_phase,
+                target_temp=actual_temp,
+                initial_delta_T=initial_delta_T
+            )
             
-    with open(os.path.join(dump_dir, f"ternary_Gliq_meta_final_{interp}.json"), "w") as f:
-        json.dump(meta_data, f, indent=4)
-
-    with open(os.path.join(dump_dir, f"ternary_Gliq_errors_final_{interp}.json"), "w") as f:
-        json.dump(Error_dict, f, indent=4)
+            # Store results
+            result = {
+                'reduced_formula': congruent_phase,
+                'elements': str(tern_sys),
+                'melting_point_k': actual_temp,
+                'initial_gliq_temp': initial_gliq_temp,
+                'final_gliq_temp': final_temp if final_temp is not None else np.nan,
+                'l0_tern': optimal_l0,
+                'initial_error_k': initial_delta_T,
+                'final_error_k': (final_temp - actual_temp) if final_temp is not None else np.nan,
+                'optimization_status': error_msg,
+                'failure_stage': failure_stage if failure_stage else ''
+            }
+            results_list.append(result)
+            
+            print(f"\nOptimization Results:")
+            print(f"  Optimal l0_tern: {optimal_l0:.0f} J/mol")
+            print(f"  Final predicted temp: {final_temp:.1f}K" if final_temp else "  Failed to obtain temperature")
+            print(f"  Final error: {result['final_error_k']:+.1f}K" if final_temp else "  N/A")
+            print(f"  Status: {error_msg}")
+            if failure_stage:
+                print(f"  Failure stage: {failure_stage}")
+            
+        except Exception as e:
+            print(f"ERROR: {str(e)}")
+            result = {
+                'reduced_formula': congruent_phase,
+                'elements': str(tern_sys),
+                'melting_point_k': actual_temp,
+                'initial_gliq_temp': initial_gliq_temp,
+                'final_gliq_temp': np.nan,
+                'l0_tern': 0.0,
+                'initial_error_k': initial_delta_T,
+                'final_error_k': np.nan,
+                'optimization_status': f"Error: {str(e)}",
+                'failure_stage': 'main_loop_exception'
+            }
+            results_list.append(result)
+    
+    # Create results DataFrame
+    results_df = pd.DataFrame(results_list)
+    
+    # Save results
+    output_file = os.path.join(final_dir, "optimized_l0_tern_results.xlsx")
+    results_df.to_excel(output_file, index=False)
+    print(f"\n{'='*70}")
+    print(f"Results saved to: {output_file}")
+    print(f"{'='*70}")
+    
+    # Print summary statistics
+    successful = results_df[results_df['optimization_status'] == 'Success']
+    partial = results_df[results_df['optimization_status'].str.contains('Partial', na=False)]
+    failed = results_df[results_df['optimization_status'].str.contains('Failed|Error', na=False)]
+    
+    print(f"\nSummary:")
+    print(f"  Total systems: {len(results_df)}")
+    print(f"  Successful (≤10K error): {len(successful)}")
+    print(f"  Partial success (>10K error): {len(partial)}")
+    print(f"  Failed: {len(failed)}")
+    
+    if len(successful) > 0:
+        print(f"\nSuccessful optimizations:")
+        print(f"  Mean final error: {successful['final_error_k'].abs().mean():.2f}K")
+        print(f"  Max final error: {successful['final_error_k'].abs().max():.2f}K")
 
 if __name__ == "__main__":
     main()

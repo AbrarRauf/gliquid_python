@@ -297,7 +297,7 @@ class ternary_interpolation:
         H = np.where(np.isfinite(h_vals_mesh), h_vals_mesh, 0).flatten()
         S = np.where(np.isfinite(s_vals_mesh), s_vals_mesh, 0).flatten()
 
-        print(f"Composition map: x0: {self.tern_sys[1]}, x1: {self.tern_sys[2]}")
+        # print(f"Composition map: x0: {self.tern_sys[1]}, x1: {self.tern_sys[2]}")
         self.hsx_df = pd.DataFrame({'x0': x_B, 'x1': x_C, 'S': S, 'H': H})
         self.hsx_df['Phase Name'] = 'L'
   
