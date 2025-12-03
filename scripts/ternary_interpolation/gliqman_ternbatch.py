@@ -60,6 +60,7 @@ def main():
     Error_dict = {}
     for tern_sys in ternary_sys_list:
         # tern_sys = ["Ba", "Mg", "Si"]
+        # tern_sys = ["Ce", "Fe", "Si"]
         i = ternary_sys_list.index(tern_sys)
         print(f"System {tern_sys} with index {i}")
         congruent_temp = ternary_df.iloc[i]["melting_point_k"]
@@ -100,6 +101,7 @@ def main():
             norm_rmse = []
             for bin_sys in binary_sys_labels:
                 flipped_sys = "-".join(sorted(bin_sys.split('-')))
+                order_changed = (bin_sys != flipped_sys)
 
                 if bin_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
@@ -126,13 +128,18 @@ def main():
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
-
-                binary_L_dict[bin_sys] = [
-                    float(params["L0_a"]),
-                    float(params["L0_b"]),
-                    float(params["L1_a"]),
-                    float(params["L1_b"])
-                ]
+                # Extract parameters and flip L1 signs if order was changed
+                L0_a = float(params["L0_a"])
+                L0_b = float(params["L0_b"])
+                L1_a = float(params["L1_a"])
+                L1_b = float(params["L1_b"])
+                
+                if order_changed:
+                    # Flip L1 parameter signs when element order is reversed
+                    L1_a = -L1_a
+                    L1_b = -L1_b
+                
+                binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
 
             print(binary_L_dict)
             plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,

@@ -4,16 +4,218 @@ from gliquid.config import data_dir
 import os
 import json
 import pandas as pd
+import numpy as np
+import ast
 
-dump_dir = "all_dumps/optimize/"
+dump_dir = "all_dumps/gliq_manu_test7_linear/"
 read_dir = "all_dumps/binary_fits/"
+print(data_dir)
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
 
-def compute_ternary(tern_sys):
-    os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
-    tern_param_format = 'combined'
+def main():
+    '''ERROR ANALYSIS'''
+    # # read in error json file from dump_dir
+    # with open(os.path.join(dump_dir, f"ternary_Gliq_errors_linear.json"), "r") as f:
+    #     Error_dict = json.load(f)
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+
+    # # initialize a dataframe
+    # error_df = pd.DataFrame.from_dict(Error_dict, orient="index", columns=["error_message"])
+    # error_df.index.name = "system"
+    # error_df.reset_index(inplace=True)
+
+    # print(error_df)
+
+    # # extract the unique error messages to a list
+    # unique_errors = error_df["error_message"].unique().tolist()
+    # print(unique_errors)
+
+    # spec_err = unique_errors[1]
+
+    # # extract these systems to a list
+    # spec_err_systems = error_df[error_df["error_message"] == spec_err]["system"].tolist()
+    # print(spec_err_systems)
+    # print(len(spec_err_systems))
+
+    os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
+    tern_param_format = "combined"
+    interp = "linear"
+
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")
+    ternary_sys_list = ternary_df["elements"].tolist()
+    ternary_sys_list = [ast.literal_eval(e) if isinstance(e, str) else e for e in ternary_sys_list]
+    
+    system_list = binary_param_df["system"].tolist()
+    
+    congruent_temps = []
+    types = []
+    valid_idx = []
+
+    meta_data = {}
+    Error_dict = {}
+    for tern_sys in ternary_sys_list:
+        # tern_sys = ["Ba", "Mg", "Si"]
+        # tern_sys = ["Ce", "Fe", "Si"]
+        i = ternary_sys_list.index(tern_sys)
+        print(f"System {tern_sys} with index {i}")
+        congruent_temp = ternary_df.iloc[i]["melting_point_k"]
+        congruent_phase = ternary_df.iloc[i]["reduced_formula"]
+        try:
+            sorted_sys = sorted(tern_sys)
+            binary_sys_labels = [
+                f"{sorted_sys[0]}-{sorted_sys[1]}",
+                f"{sorted_sys[1]}-{sorted_sys[2]}",
+                f"{sorted_sys[2]}-{sorted_sys[0]}"
+            ]
+            print(binary_sys_labels)
+
+            binary_L_dict = {}
+            fitorpred = {}
+
+            # for bin_sys in binary_sys_labels:
+            #     flipped_sys = "-".join(sorted(bin_sys.split("-")))
+            #     print(flipped_sys)
+
+            #     if bin_sys in binary_param_df["system"].tolist():
+            #         params = binary_param_df[binary_param_df["system"] == bin_sys].iloc[0]
+            #     elif flipped_sys in binary_param_df["system"].tolist():
+            #         params = binary_param_df[binary_param_df["system"] == flipped_sys].iloc[0]
+            #     else:
+            #         raise Exception("System not in df")
+
+            #     binary_L_dict[bin_sys] = [
+            #         float(params["L0_a"]),
+            #         float(params["L0_b"]),
+            #         float(params["L1_a"]),
+            #         float(params["L1_b"])
+            #     ]
+            pred_tag = "All fitted"
+            mae = []
+            rmse = []
+            norm_mae = []
+            norm_rmse = []
+            for bin_sys in binary_sys_labels:
+                flipped_sys = "-".join(sorted(bin_sys.split('-')))
+                order_changed = (bin_sys != flipped_sys)
+
+                if bin_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
+                    norm_mae.append(params["norm_mae"])
+                    norm_rmse.append(params["norm_rmse"])
+                elif flipped_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
+                    norm_mae.append(params["norm_mae"])
+                    norm_rmse.append(params["norm_rmse"])
+                elif bin_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                elif flipped_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                else:
+                    raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
+
+                # Extract parameters and flip L1 signs if order was changed
+                L0_a = float(params["L0_a"])
+                L0_b = float(params["L0_b"])
+                L1_a = float(params["L1_a"])
+                L1_b = float(params["L1_b"])
+                
+                if order_changed:
+                    # Flip L1 parameter signs when element order is reversed
+                    L1_a = -L1_a
+                    L1_b = -L1_b
+                
+                binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
+
+            print(binary_L_dict)
+            plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
+                                        L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5.0, delta=0.025, fit_or_pred=fitorpred)
+            plotter.interpolate()
+            plotter.process_data()
+            tern_meta = plotter.ternary_meta
+            df_list = plotter.equil_df_list
+            concat_df = pd.concat(df_list, ignore_index=True)
+            sub_df = concat_df[concat_df["Phase"] == congruent_phase]
+            tern_fig = plotter.plot_ternary()
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
+            if sub_df.empty:
+                raise Exception("MPDS congruent phase not on the hull!")
+
+            sub_df = sub_df.sort_values(by="T", ascending=False)
+            sub_df = sub_df.iloc[0]
+            comp = [sub_df["x0"], sub_df["x1"]]
+            temp = sub_df["T"] + 273.15
+            print(concat_df)
+            sub_df2 = concat_df[(concat_df["Phase"] == "L") &
+                                (np.isclose(concat_df["x0"], comp[0], rtol=0, atol=0.025)) &
+                                (np.isclose(concat_df["x1"], comp[1], rtol=0, atol=0.025))]
+            sub_df2 = sub_df2.sort_values(by="T", ascending=True)
+            sub_df2 = sub_df2.iloc[0]
+            temp2 = sub_df2["T"] + 273.15
+            print(temp, temp2)
+            if abs(temp - temp2) < 20:
+                types.append("congruent")
+            else:
+                types.append("non-congruent")
+            valid_idx.append(i)
+            congruent_temps.append(temp)
+            meta_data['-'.join(sorted_sys)] = {
+                "Fit Type": pred_tag,
+                "type": types[-1],
+                "mpds_temp": congruent_temp,
+                "mpds_phase": congruent_phase,
+                "calculated_temp": temp,
+                "mae": mae,
+                "rmse": rmse,
+                "norm_mae": norm_mae,
+                "norm_rmse": norm_rmse,
+                "ternary_meta": tern_meta,
+                "binary_L_params": binary_L_dict,
+            }
+
+            # binary_plot1 = plotter.bin_fig_list[0]
+            # ploff.plot(binary_plot1, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}1_binary.html', auto_open=True)
+            print(f"System {tern_sys} with {congruent_phase} index {i} and {temp} is valid")
+
+        except Exception as e:
+            print(f"Error in system {'-'.join(sorted_sys)} with index {i}: {e}")
+            Error_dict['-'.join(sorted_sys)] = str(e)
+
+    print(congruent_temps)
+    print(types)
+    print(valid_idx)
+    print(Error_dict)
+
+    new_df = ternary_df.iloc[valid_idx]
+    new_df["gliq_melting_temp"] = congruent_temps
+    new_df["type"] = types
+    print(new_df)
+
+    new_df.to_excel(os.path.join(dump_dir, f"ternary_Gliq_mps_final_{interp}.xlsx"), index=False)
+            
+    with open(os.path.join(dump_dir, f"ternary_Gliq_meta_final_{interp}.json"), "w") as f:
+        json.dump(meta_data, f, indent=4)
+
+    with open(os.path.join(dump_dir, f"ternary_Gliq_errors_final_{interp}.json"), "w") as f:
+        json.dump(Error_dict, f, indent=4)
+
+if __name__ == "__main__":
+    main()
+
+    
+
 

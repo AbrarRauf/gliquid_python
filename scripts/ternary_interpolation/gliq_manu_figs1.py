@@ -192,10 +192,14 @@ def eutectic_fig():
 
 
 def inter_figure(): 
-    inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
+    # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+    # meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
+
+    inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
+    # df = pd.read_csv(inter_path)
 
     # evaluate elements column using ast.literal_eval
     df['elements'] = df['elements'].apply(lambda x: ast.literal_eval(x))
@@ -280,8 +284,8 @@ def inter_figure():
 
 
 def inter_figure_filtered():
-    inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
+    inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
 
@@ -315,9 +319,17 @@ def inter_figure_filtered():
     rmse_filtered = np.sqrt(np.mean(differences_filtered**2))
     mae_filtered = np.mean(np.abs(differences_filtered))
     std_dev_filtered = np.std(differences_filtered)
+    
+    # compute standard dev from formula and not using np.std
+    n = len(differences_filtered)
+    mean_diff = np.mean(differences_filtered)
+    variance = np.sum((differences_filtered - mean_diff)**2) / n
+    std_dev_filtered_formula = np.sqrt(variance)
+
     print(f"Average RMSE between interpolated and MPDS values (filtered): {rmse_filtered:.2f} K")
     print(f"Average MAE between interpolated and MPDS values (filtered): {mae_filtered:.2f} K")
     print(f"Standard deviation of differences (filtered): {std_dev_filtered:.2f} K")
+    print(f"Standard deviation of differences (filtered, formula): {std_dev_filtered_formula:.2f} K")
     
     # Color mapping
     colors = {'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'}
@@ -334,6 +346,13 @@ def inter_figure_filtered():
         edgecolors='none',
         linewidths=0
     )
+    # Toggle label by commenting/uncommenting
+    texts = []
+    for _, row in df.iterrows():
+        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+
+    # Adjust text to reduce overlaps
+    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df_filtered['melting_point_k'].min(), df_filtered['gliq_melting_temp'].min())
