@@ -25,8 +25,9 @@ if not os.path.exists(final_dir):
 # TESTING PARAMETERS
 # ============================================================================
 # Set to a specific formula to test a single system, or None to process all
-# For optimization: TEST_SINGLE_FORMULA = "CdSnAs2"
-TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+# For optimization: 
+TEST_SINGLE_FORMULA = "Ag3AsSe3"
+# TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
 
 TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
 # TEST_SINGLE_SYSTEM = None 
@@ -231,6 +232,16 @@ def main_optimize():
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx")
     
+    # Load metadata to filter for "All fitted" systems only
+    if not os.path.exists(meta_doc):
+        print(f"WARNING: Metadata file not found at {meta_doc}")
+        print("Proceeding without metadata filtering...")
+        metadata = {}
+    else:
+        with open(meta_doc, 'r') as f:
+            metadata = json.load(f)
+        print(f"Loaded metadata from: {meta_doc}")
+    
     # Filter for single system testing if specified
     if TEST_SINGLE_FORMULA is not None:
         ternary_df = ternary_df[ternary_df['reduced_formula'] == TEST_SINGLE_FORMULA]
@@ -242,9 +253,7 @@ def main_optimize():
     
     # Prepare results storage
     results_list = []
-    
-    # Prepare results storage
-    results_list = []
+    skipped_count = 0
     
     for idx, row in ternary_df.iterrows():
         tern_sys = ast.literal_eval(row["elements"]) if isinstance(row["elements"], str) else row["elements"]
@@ -253,6 +262,22 @@ def main_optimize():
         initial_gliq_temp = row["gliq_melting_temp"]
         initial_delta_T = initial_gliq_temp - actual_temp
         
+        # Check if this system is "All fitted" in metadata
+        sorted_sys = sorted(tern_sys)
+        system_key = "-".join(sorted_sys)
+        
+        if metadata:
+            if system_key in metadata:
+                fit_type = metadata[system_key].get("Fit Type", "")
+                if fit_type != "All fitted":
+                    print(f"\nSkipping {congruent_phase} (system: {system_key}) - Fit Type: {fit_type}")
+                    skipped_count += 1
+                    continue
+            else:
+                print(f"\nWARNING: System {system_key} not found in metadata, skipping...")
+                skipped_count += 1
+                continue
+        
         print(f"\n{'='*70}")
         print(f"Processing {congruent_phase} (system: {tern_sys})")
         print(f"Target: {actual_temp:.1f}K, Initial predicted: {initial_gliq_temp:.1f}K")
@@ -260,7 +285,6 @@ def main_optimize():
         print(f"{'='*70}")
         
         try:
-            sorted_sys = sorted(tern_sys)
             binary_sys_labels = [
                 f"{sorted_sys[0]}-{sorted_sys[1]}",
                 f"{sorted_sys[1]}-{sorted_sys[2]}",
@@ -385,7 +409,8 @@ def main_optimize():
     failed = results_df[results_df['optimization_status'].str.contains('Failed|Error', na=False)]
     
     print(f"\nSummary:")
-    print(f"  Total systems: {len(results_df)}")
+    print(f"  Total systems processed: {len(results_df)}")
+    print(f"  Skipped (not 'All fitted'): {skipped_count}")
     print(f"  Successful (≤10K error): {len(successful)}")
     print(f"  Partial success (>10K error): {len(partial)}")
     print(f"  Failed: {len(failed)}")
@@ -533,4 +558,4 @@ def main_post():
 
 if __name__ == "__main__":
     main_optimize()
-    main_post()
+    # main_post()
