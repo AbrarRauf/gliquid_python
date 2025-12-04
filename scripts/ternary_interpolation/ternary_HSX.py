@@ -459,7 +459,7 @@ class ternary_gtx_plotter(ternary_interpolation):
         tern_temp = fusion_temp[self.tern_sys].values 
         max_temp = round(np.max(tern_temp) + 500)
         min_temp = round(np.min(tern_temp))
-        self.conds = [np.min(np.array([0, min_temp - 200])), max_temp + self.temp_slider[1]]
+        self.conds = [np.min(np.array([0, min_temp - 200])) - self.temp_slider[0], max_temp + self.temp_slider[1]]
         self.T_grid = np.arange(self.conds[0], self.conds[1] + self.T_incr, self.T_incr)
         self.hsx_df['x0'] = self.hsx_df['x0'].round(4)
         self.hsx_df['x1'] = self.hsx_df['x1'].round(4)

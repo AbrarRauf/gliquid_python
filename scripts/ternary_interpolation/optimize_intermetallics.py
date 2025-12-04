@@ -9,6 +9,7 @@ import ast
 from scipy.optimize import minimize_scalar, brentq
 
 dump_dir = "all_dumps/gliq_manu_test7_linear/"
+meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
 final_dir = "all_dumps/gliq_manu_test7_correction/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
@@ -27,8 +28,8 @@ if not os.path.exists(final_dir):
 # For optimization: TEST_SINGLE_FORMULA = "CdSnAs2"
 TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
 
-# TEST_SINGLE_SYSTEM = ["In", "Hg", "Te"]ca
-TEST_SINGLE_SYSTEM = None 
+TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
+# TEST_SINGLE_SYSTEM = None 
 # ============================================================================
 
 
@@ -85,6 +86,8 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
 
             error_details['stage'] = 'plot_ternary'
             tern_fig = plotter.plot_ternary()
+
+            print(plotter.liquid_plotting_df)
             
             error_details['stage'] = 'get_melting_temps'
             inter_list = [congruent_phase]
@@ -497,7 +500,7 @@ def main_post():
                 interp_type=interp, 
                 param_format=tern_param_format,
                 L_dict=binary_L_dict, 
-                temp_slider=[0, 500], 
+                temp_slider=[500, 500], 
                 T_incr=10, 
                 delta=0.025, 
                 fit_or_pred=fitorpred,
@@ -529,5 +532,5 @@ def main_post():
 
 
 if __name__ == "__main__":
-    # main_optimize()
+    main_optimize()
     main_post()
