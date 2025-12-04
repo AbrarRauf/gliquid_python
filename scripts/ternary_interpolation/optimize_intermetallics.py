@@ -20,9 +20,16 @@ if not os.path.exists(final_dir):
     os.makedirs(final_dir)
 
 
+# ============================================================================
+# TESTING PARAMETERS
+# ============================================================================
 # Set to a specific formula to test a single system, or None to process all
-# TEST_SINGLE_FORMULA = "CdSnAs2"  # Example: "CdSnAs2" or None
+# For optimization: TEST_SINGLE_FORMULA = "CdSnAs2"
 TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+
+# TEST_SINGLE_SYSTEM = ["In", "Hg", "Te"]ca
+TEST_SINGLE_SYSTEM = None 
+# ============================================================================
 
 
 def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, interp, 
@@ -177,7 +184,7 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
         
         # Check if acceptable
         if new_error <= acceptable_error:
-            print(f"\n  ✓ Converged! Final error: {new_delta_T:+.1f}K")
+            print(f"\n  Converged! Final error: {new_delta_T:+.1f}K")
             return best_l0, best_temp, True, "Success", None
         
         # Check if we're making progress
@@ -202,7 +209,7 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
         print(f"\n  Partial success - best error: {best_error:.1f}K")
     else:
         error_message = f"Failed - no improvement (error: {best_error:.1f}K)"
-        print(f"\n  ✗ Failed - no improvement achieved")
+        print(f"\n  Failed - no improvement achieved")
     
     if error_log:
         print(f"\n  Errors encountered: {len(error_log)}")
@@ -212,7 +219,7 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
     return best_l0, best_temp, False, error_message, most_common_failure
 
 
-def main():
+def main_optimize():
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
     interp = "linear"
@@ -385,9 +392,142 @@ def main():
         print(f"  Mean final error: {successful['final_error_k'].abs().mean():.2f}K")
         print(f"  Max final error: {successful['final_error_k'].abs().max():.2f}K")
 
-if __name__ == "__main__":
-    main()
 
+def main_post():
+    """
+    Generate and save corrected ternary phase diagrams using optimized l0_tern values.
+    Uses TEST_SINGLE_SYSTEM to optionally filter to a single chemical system for testing.
+    """
+    os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
+    tern_param_format = "combined"
+    interp = "linear"
+
+    # Load optimization results
+    results_file = os.path.join(final_dir, "optimized_l0_tern_results.xlsx")
+    if not os.path.exists(results_file):
+        print(f"ERROR: Results file not found at {results_file}")
+        print("Please run main_optimize() first.")
+        return
     
+    results_df = pd.read_excel(results_file)
+    
+    # Filter for single system testing if specified
+    if TEST_SINGLE_SYSTEM is not None:
+        # Normalize the test system (sort elements)
+        test_sys_sorted = sorted(TEST_SINGLE_SYSTEM)
+        
+        # Filter rows where elements match the test system
+        def match_system(elements_str):
+            elements = ast.literal_eval(elements_str) if isinstance(elements_str, str) else elements_str
+            return sorted(elements) == test_sys_sorted
+        
+        results_df = results_df[results_df['elements'].apply(match_system)]
+        
+        if len(results_df) == 0:
+            print(f"ERROR: System {TEST_SINGLE_SYSTEM} not found in the results!")
+            return
+        print(f"\n*** TESTING MODE: Plotting only system {test_sys_sorted} ***")
+        print(f"Found {len(results_df)} phase(s) in this system\n")
+    
+    print(f"\n{'='*70}")
+    print(f"Generating corrected phase diagrams from: {results_file}")
+    print(f"{'='*70}")
+    print(f"Total systems to plot: {len(results_df)}")
+    
+    # Load binary parameter data
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    
+    success_count = 0
+    error_count = 0
+    
+    for idx, row in results_df.iterrows():
+        tern_sys = ast.literal_eval(row["elements"]) if isinstance(row["elements"], str) else row["elements"]
+        congruent_phase = row["reduced_formula"]
+        optimized_l0 = row["l0_tern"]
+        
+        print(f"\n[{idx+1}/{len(results_df)}] Processing {congruent_phase} (system: {tern_sys})")
+        print(f"  Using l0_tern = {optimized_l0:.0f} J/mol")
+        
+        try:
+            sorted_sys = sorted(tern_sys)
+            binary_sys_labels = [
+                f"{sorted_sys[0]}-{sorted_sys[1]}",
+                f"{sorted_sys[1]}-{sorted_sys[2]}",
+                f"{sorted_sys[2]}-{sorted_sys[0]}"
+            ]
+            
+            binary_L_dict = {}
+            fitorpred = {}
+            
+            for bin_sys in binary_sys_labels:
+                flipped_sys = "-".join(sorted(bin_sys.split('-')))
+                order_changed = (bin_sys != flipped_sys)
+
+                if bin_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                elif flipped_sys in binary_param_df['system'].tolist():
+                    params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "fit"
+                elif bin_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                elif flipped_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                else:
+                    raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
+
+                # Extract parameters and flip L1 signs if order was changed
+                L0_a = float(params["L0_a"])
+                L0_b = float(params["L0_b"])
+                L1_a = float(params["L1_a"])
+                L1_b = float(params["L1_b"])
+                
+                if order_changed:
+                    L1_a = -L1_a
+                    L1_b = -L1_b
+                
+                binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
+
+            # Generate ternary phase diagram with optimized l0_tern
+            plotter = ternary_gtx_plotter(
+                tern_sys, data_dir, 
+                interp_type=interp, 
+                param_format=tern_param_format,
+                L_dict=binary_L_dict, 
+                temp_slider=[0, 500], 
+                T_incr=10, 
+                delta=0.025, 
+                fit_or_pred=fitorpred,
+                L_tern=[optimized_l0, 0]
+            )
+            
+            plotter.interpolate()
+            plotter.process_data()
+            tern_fig = plotter.plot_ternary()
+            
+            # Save figure to correction directory
+            output_filename = f'{"-".join(sorted_sys)}_{congruent_phase}_corrected.html'
+            output_path = os.path.join(final_dir, output_filename)
+            ploff.plot(tern_fig, filename=output_path, auto_open=False)
+            
+            print(f"  Saved: {output_filename}")
+            success_count += 1
+            
+        except Exception as e:
+            print(f"  ERROR: {str(e)}")
+            error_count += 1
+    
+    print(f"\n{'='*70}")
+    print(f"Phase diagram generation complete")
+    print(f"{'='*70}")
+    print(f"  Successfully plotted: {success_count}/{len(results_df)}")
+    print(f"  Errors: {error_count}/{len(results_df)}")
+    print(f"  Saved to: {final_dir}")
 
 
+if __name__ == "__main__":
+    # main_optimize()
+    main_post()
