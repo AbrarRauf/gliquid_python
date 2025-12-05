@@ -98,6 +98,8 @@ def plot_ternary_system():
 
     tern_fig = plotter.plot_ternary()
 
+    print(plotter.liq_plotting_df)
+    exit()
     # update layout and remove axis and background
     # tern_fig.update_layout(
     #     scene = dict(

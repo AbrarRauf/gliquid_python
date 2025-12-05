@@ -6,11 +6,11 @@ import json
 import pandas as pd
 import numpy as np
 import ast
-from scipy.optimize import minimize_scalar, brentq
+# from scipy.optimize import minimize_scalar, brentq
 
 dump_dir = "all_dumps/gliq_manu_test7_linear/"
 meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
-final_dir = "all_dumps/gliq_manu_test7_correction/"
+final_dir = "all_dumps/gliq_manu_test7_correction2/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -26,11 +26,11 @@ if not os.path.exists(final_dir):
 # ============================================================================
 # Set to a specific formula to test a single system, or None to process all
 # For optimization: 
-TEST_SINGLE_FORMULA = "Ag3AsSe3"
-# TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+# TEST_SINGLE_FORMULA = "Ag3AsSe3"
+TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
 
-TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
-# TEST_SINGLE_SYSTEM = None 
+# TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
+TEST_SINGLE_SYSTEM = None 
 # ============================================================================
 
 
@@ -88,7 +88,15 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
             error_details['stage'] = 'plot_ternary'
             tern_fig = plotter.plot_ternary()
 
-            print(plotter.liquid_plotting_df)
+            # Check minimum liquidus temperature constraint
+            error_details['stage'] = 'temperature_validation'
+            if hasattr(plotter, 'liq_plotting_df') and plotter.liq_plotting_df is not None:
+                if 'T' in plotter.liq_plotting_df.columns:
+                    min_temp_celsius = plotter.liq_plotting_df['T'].min()
+                    if min_temp_celsius < -270:
+                        error_msg = f"Minimum liquidus temperature ({min_temp_celsius:.1f}°C) below -270°C threshold"
+                        print(f"TEMP CONSTRAINT VIOLATION: {min_temp_celsius:.1f}°C")
+                        return None, error_msg
             
             error_details['stage'] = 'get_melting_temps'
             inter_list = [congruent_phase]
@@ -153,23 +161,47 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
             if 'Error at' in error_msg:
                 stage = error_msg.split('Error at ')[1].split(':')[0]
                 failure_stages.append(stage)
-            print(f"    Failed to evaluate - trying reduced correction...")
             
-            # Try smaller correction if full correction failed
-            for scale_factor in [0.5, 0.25]:
-                reduced_correction = l0_correction * scale_factor
-                test_l0_reduced = current_l0 + reduced_correction
-                print(f"    Trying {scale_factor*100:.0f}% correction: {reduced_correction:+.0f} J/mol")
+            # Check if failure is due to temperature constraint violation
+            if error_msg and 'below -270°C threshold' in error_msg:
+                print(f"    Temperature constraint violated - reducing l0_tern magnitude...")
                 
-                temp_result, error_msg = evaluate_temp(test_l0_reduced)
-                if temp_result is not None:
-                    test_l0 = test_l0_reduced
-                    break
-                else:
-                    error_log.append((test_l0_reduced, error_msg))
-                    if 'Error at' in error_msg:
-                        stage = error_msg.split('Error at ')[1].split(':')[0]
-                        failure_stages.append(stage)
+                # Reduce magnitude iteratively until constraint is satisfied
+                for scale_factor in [0.75, 0.5, 0.25, 0.1]:
+                    test_l0_reduced = test_l0 * scale_factor
+                    print(f"    Trying {scale_factor*100:.0f}% of l0_tern: {test_l0_reduced:.0f} J/mol")
+                    
+                    temp_result, error_msg = evaluate_temp(test_l0_reduced)
+                    if temp_result is not None:
+                        test_l0 = test_l0_reduced
+                        print(f"    Temperature constraint satisfied at {scale_factor*100:.0f}% magnitude")
+                        break
+                    else:
+                        error_log.append((test_l0_reduced, error_msg))
+                        if error_msg and 'below -270°C threshold' not in error_msg:
+                            # Different error, stop trying
+                            if 'Error at' in error_msg:
+                                stage = error_msg.split('Error at ')[1].split(':')[0]
+                                failure_stages.append(stage)
+                            break
+            else:
+                print(f"    Failed to evaluate - trying reduced correction...")
+                
+                # Try smaller correction if full correction failed
+                for scale_factor in [0.5, 0.25]:
+                    reduced_correction = l0_correction * scale_factor
+                    test_l0_reduced = current_l0 + reduced_correction
+                    print(f"    Trying {scale_factor*100:.0f}% correction: {reduced_correction:+.0f} J/mol")
+                    
+                    temp_result, error_msg = evaluate_temp(test_l0_reduced)
+                    if temp_result is not None:
+                        test_l0 = test_l0_reduced
+                        break
+                    else:
+                        error_log.append((test_l0_reduced, error_msg))
+                        if 'Error at' in error_msg:
+                            stage = error_msg.split('Error at ')[1].split(':')[0]
+                            failure_stages.append(stage)
             
             if temp_result is None:
                 print(f"    All attempts failed in this iteration")
@@ -557,5 +589,5 @@ def main_post():
 
 
 if __name__ == "__main__":
-    main_optimize()
-    # main_post()
+    # main_optimize()
+    main_post()
