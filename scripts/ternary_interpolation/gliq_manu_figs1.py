@@ -370,6 +370,77 @@ def inter_figure_filtered():
     plt.tight_layout()
     plt.show()
 
+def inter_figure_correction():
+    inter_path = "all_dumps/gliq_manu_test7_correction2/optimized_l0_tern_results_current.xlsx"
+    
+    # Load the optimization results
+    df = pd.read_excel(inter_path)
+    
+    # Create the figure
+    plt.figure(figsize=(9, 6))
+    
+    # Plot initial predicted temperatures (single color)
+    plt.scatter(
+        df['melting_point_k'],
+        df['initial_gliq_temp'],
+        c='gray',
+        s=80,
+        alpha=1.0,
+        label='Initial prediction',
+        zorder=2
+    )
+    
+    # Draw connecting lines between initial and final predictions
+    for _, row in df.iterrows():
+        plt.plot(
+            [row['melting_point_k'], row['melting_point_k']],
+            [row['initial_gliq_temp'], row['final_gliq_temp']],
+            'gray',
+            linewidth=0.8,
+            alpha=1.0,
+            zorder=1
+        )
+    
+    # Plot final corrected temperatures colored by l0_tern value
+    scatter = plt.scatter(
+        df['melting_point_k'],
+        df['final_gliq_temp'],
+        c=df['l0_tern'],
+        s=80,
+        cmap='RdBu_r',  # Diverging colormap: red (negative) -> white (0) -> blue (positive)
+        edgecolors='black',
+        linewidths=1,
+        label='Corrected prediction',
+        zorder=3,
+        vmin=-abs(df['l0_tern']).max(),  # Center colormap at 0
+        vmax=abs(df['l0_tern']).max()
+    )
+    
+    # Add colorbar
+    cbar = plt.colorbar(scatter)
+    cbar.set_label('l0_tern (J/mol)', rotation=270, labelpad=20)
+    
+    # Plot the y=x reference line with slight extension beyond data range
+    min_val = min(df['melting_point_k'].min(), 
+                  df['initial_gliq_temp'].min(), 
+                  df['final_gliq_temp'].min())
+    max_val = max(df['melting_point_k'].max(), 
+                  df['initial_gliq_temp'].max(), 
+                  df['final_gliq_temp'].max())
+    
+    # Add a small margin (e.g., 2% of the range) to extend the line slightly
+    margin = (max_val - min_val) * 0.02
+    plt.plot([min_val - margin, max_val - 300], 
+             [min_val - margin, max_val - 300], 
+             'k--', zorder=0)
+    
+    # Axis labels and formatting
+    plt.xlabel('MPDS Congruent Melting Temperature (K)')
+    plt.ylabel('Interpolated Melting Temperature (K)')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 
 def inter_figure_error_metrics():
     inter_path = "all_dumps/gliq_manu_test2/ternary_Gliq_mps_final_linear.xlsx"
@@ -931,8 +1002,9 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 def main():
     # # eutectic_fig()
-    inter_figure()
-    inter_figure_filtered()
+    # inter_figure()
+    # inter_figure_filtered()
+    inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis

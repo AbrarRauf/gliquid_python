@@ -14,15 +14,19 @@ if not os.path.exists(dump_dir):
 def plot_ternary_system():
     # Bi-Cd-Sn system
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
-    tern_sys = ["Cd", "Sn", "As"]
+    # tern_sys = ["Cd", "Sn", "As"]
+    # tern_sys = ["Er", "Cu", "Ge"]
+    # tern_sys = ["Ce", "Zn", "In"]
+    tern_sys = ["Tm", "Cu", "Ge"]
     # tern_sys = ["Zr", "Te", "Bi"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    spec_inter = "Tm(CuGe)2"
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
 
@@ -74,9 +78,10 @@ def plot_ternary_system():
 
 
 
-    # l0_tern = 0.0
+    l0_tern = 0.0
     # l0_tern = 53000
-    l0_tern = -70000
+    # l0_tern = 40000
+    # l0_tern = 100000
 
     print(binary_L_dict)
     # plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
@@ -85,7 +90,7 @@ def plot_ternary_system():
     print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=10, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     print(plotter.hsx_df)
 
@@ -99,7 +104,6 @@ def plot_ternary_system():
     tern_fig = plotter.plot_ternary()
 
     print(plotter.liq_plotting_df)
-    exit()
     # update layout and remove axis and background
     # tern_fig.update_layout(
     #     scene = dict(
@@ -110,13 +114,12 @@ def plot_ternary_system():
     #     )
     # )
     bin_fig_list = plotter.bin_fig_list
-    for i, bin_fig in enumerate(bin_fig_list):
-        bin_fig.show()
+    # for i, bin_fig in enumerate(bin_fig_list):
+    #     bin_fig.show()
 
     print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    spec_inter = "CdSnAs2"
     inter_list = [spec_inter]
     melting_temps = plotter.get_inter_melting_temps(inter_list)
     print(melting_temps)
@@ -130,7 +133,6 @@ def plot_ternary_system():
     # ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{tern_param_format}_system.html', auto_open=True)
     ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_eut_trial_system.html', auto_open=True)
 
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps["CdSnAs2"] + 273.15, "K")
 
 if __name__ == "__main__":
     plot_ternary_system()

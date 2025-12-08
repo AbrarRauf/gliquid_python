@@ -21,13 +21,10 @@ if not os.path.exists(final_dir):
     os.makedirs(final_dir)
 
 
-# ============================================================================
-# TESTING PARAMETERS
-# ============================================================================
 # Set to a specific formula to test a single system, or None to process all
 # For optimization: 
-# TEST_SINGLE_FORMULA = "Ag3AsSe3"
-TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+TEST_SINGLE_FORMULA = "Tm(CuGe)2"
+# TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
 
 # TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
 TEST_SINGLE_SYSTEM = None 
@@ -72,8 +69,8 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
                 interp_type=interp, 
                 param_format=tern_param_format,
                 L_dict=binary_L_dict, 
-                temp_slider=[0, 0], 
-                T_incr=10, 
+                temp_slider=[500, 500], 
+                T_incr=5, 
                 delta=0.025, 
                 fit_or_pred=fitorpred,
                 L_tern=[l0_tern_value, 0]
@@ -143,6 +140,7 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
         # If delta_T > 0 (predicted too high), need negative l0_tern
         # If delta_T < 0 (predicted too low), need positive l0_tern
         correction_ratio = -800  # J/mol per K
+        # correction_ratio = -500  # J/mol per K
         l0_correction = correction_ratio * current_delta_T
         
         # Apply correction
@@ -558,7 +556,7 @@ def main_post():
                 param_format=tern_param_format,
                 L_dict=binary_L_dict, 
                 temp_slider=[500, 500], 
-                T_incr=10, 
+                T_incr=5, 
                 delta=0.025, 
                 fit_or_pred=fitorpred,
                 L_tern=[optimized_l0, 0]
@@ -589,5 +587,5 @@ def main_post():
 
 
 if __name__ == "__main__":
-    # main_optimize()
-    main_post()
+    main_optimize()
+    # main_post()
