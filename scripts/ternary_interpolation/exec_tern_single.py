@@ -21,7 +21,7 @@ def plot_ternary_system():
     # tern_sys = ["Zr", "Te", "Bi"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
-    tern_param_format = 'combined'
+    tern_param_format = 'combined'  
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
     spec_inter = "Tm(CuGe)2"
@@ -90,7 +90,7 @@ def plot_ternary_system():
     print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     print(plotter.hsx_df)
 

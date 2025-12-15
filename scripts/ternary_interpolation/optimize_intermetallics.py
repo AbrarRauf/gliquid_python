@@ -10,7 +10,7 @@ import ast
 
 dump_dir = "all_dumps/gliq_manu_test7_linear/"
 meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
-final_dir = "all_dumps/gliq_manu_test7_correction2/"
+final_dir = "all_dumps/gliq_manu_test7_correction3/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -23,8 +23,8 @@ if not os.path.exists(final_dir):
 
 # Set to a specific formula to test a single system, or None to process all
 # For optimization: 
-TEST_SINGLE_FORMULA = "Tm(CuGe)2"
-# TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
+# TEST_SINGLE_FORMULA = "Tm(CuGe)2"
+TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
 
 # TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
 TEST_SINGLE_SYSTEM = None 

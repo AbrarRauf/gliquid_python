@@ -8,7 +8,8 @@ from adjustText import adjust_text
 import json
 
 def eutectic_fig():
-    eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results.xlsx"
+    # eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results_og.xlsx"
+    eut_path = "all_dumps/gliq_manu_test_eut_final/ternary_eutectic_results.xlsx"
 
     df_eut = pd.read_excel(eut_path)
     # columns_to_drop = ['Reference:']
@@ -418,7 +419,7 @@ def inter_figure_correction():
     
     # Add colorbar
     cbar = plt.colorbar(scatter)
-    cbar.set_label('l0_tern (J/mol)', rotation=270, labelpad=20)
+    cbar.set_label('Ternary L0-term (J/mol)', rotation=90, labelpad=20, fontweight='bold')
     
     # Plot the y=x reference line with slight extension beyond data range
     min_val = min(df['melting_point_k'].min(), 
@@ -435,8 +436,9 @@ def inter_figure_correction():
              'k--', zorder=0)
     
     # Axis labels and formatting
-    plt.xlabel('MPDS Congruent Melting Temperature (K)')
-    plt.ylabel('Interpolated Melting Temperature (K)')
+    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
+    plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
+    plt.tick_params(axis='both', which='major', labelsize=12)
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -1001,10 +1003,10 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    # # eutectic_fig()
+    eutectic_fig()
     # inter_figure()
     # inter_figure_filtered()
-    inter_figure_correction()
+    # inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis
