@@ -4,3 +4,4 @@ build/
 scripts/ternary_interpolation/__pycache__/
 data/
 all_dumps/
+.vscode/

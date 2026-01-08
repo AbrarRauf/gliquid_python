@@ -442,6 +442,48 @@ def inter_figure_correction():
     plt.legend()
     plt.tight_layout()
     plt.show()
+    
+    # Create second figure with only corrected results
+    plt.figure(figsize=(9, 6))
+    
+    # Plot only final corrected temperatures colored by l0_tern value
+    scatter = plt.scatter(
+        df['melting_point_k'],
+        df['final_gliq_temp'],
+        c=df['l0_tern'],
+        s=80,
+        cmap='RdBu_r',  # Diverging colormap: red (negative) -> white (0) -> blue (positive)
+        edgecolors='black',
+        linewidths=1,
+        label='Corrected prediction',
+        zorder=3,
+        vmin=-abs(df['l0_tern']).max(),  # Center colormap at 0
+        vmax=abs(df['l0_tern']).max()
+    )
+    
+    # Add colorbar
+    cbar = plt.colorbar(scatter)
+    cbar.set_label('Ternary L0-term (J/mol)', rotation=90, labelpad=20, fontweight='bold')
+    
+    # Plot the y=x reference line with slight extension beyond data range
+    min_val = min(df['melting_point_k'].min(), 
+                  df['final_gliq_temp'].min())
+    max_val = max(df['melting_point_k'].max(), 
+                  df['final_gliq_temp'].max())
+    
+    # Add a small margin (e.g., 2% of the range) to extend the line slightly
+    margin = (max_val - min_val) * 0.02
+    plt.plot([min_val - margin, max_val - 300], 
+             [min_val - margin, max_val - 300], 
+             'k--', zorder=0)
+    
+    # Axis labels and formatting
+    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
+    plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 def inter_figure_error_metrics():
@@ -1003,9 +1045,9 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    eutectic_fig()
+    # eutectic_fig()
     # inter_figure()
-    # inter_figure_filtered()
+    inter_figure_filtered()
     # inter_figure_correction()
     # inter_figure_error_metrics()
     
@@ -1014,7 +1056,6 @@ def main():
     
     # ternary_hull_metrics(include_predicted=False)
     
-    # Plot L parameter distributions
     # plot_L_parameter_distributions()
     
     # Run binary L parameter analysis with different deviation metrics
