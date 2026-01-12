@@ -17,14 +17,16 @@ def plot_ternary_system():
     # tern_sys = ["Cd", "Sn", "As"]
     # tern_sys = ["Er", "Cu", "Ge"]
     # tern_sys = ["Ce", "Zn", "In"]
-    tern_sys = ["Tm", "Cu", "Ge"]
+    # tern_sys = ["Tm", "Cu", "Ge"]
+    tern_sys = ["Fe", "Ce", "Si"]
+    # tern_sys = ["Bi", "Cd", "Sn"]
     # tern_sys = ["Zr", "Te", "Bi"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
-    spec_inter = "Tm(CuGe)2"
+    spec_inter = "CeFeSi"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
@@ -90,7 +92,7 @@ def plot_ternary_system():
     print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=1, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     print(plotter.hsx_df)
 
@@ -105,14 +107,15 @@ def plot_ternary_system():
 
     print(plotter.liq_plotting_df)
     # update layout and remove axis and background
-    # tern_fig.update_layout(
-    #     scene = dict(
-    #         zaxis_visible=False,
-    #         xaxis_visible=False,
-    #         yaxis_visible=False,
-    #         bgcolor='white'
-    #     )
-    # )
+    tern_fig.update_layout(
+        scene = dict(
+            zaxis_visible=False,
+            xaxis_visible=False,
+            yaxis_visible=False,
+            bgcolor='white'
+        )
+    )
+
     bin_fig_list = plotter.bin_fig_list
     # for i, bin_fig in enumerate(bin_fig_list):
     #     bin_fig.show()
@@ -120,11 +123,11 @@ def plot_ternary_system():
     print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    inter_list = [spec_inter]
-    melting_temps = plotter.get_inter_melting_temps(inter_list)
-    print(melting_temps)
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
+    # inter_list = [spec_inter]
+    # melting_temps = plotter.get_inter_melting_temps(inter_list)
+    # print(melting_temps)
+    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
+    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
 
     # order by index
     plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)

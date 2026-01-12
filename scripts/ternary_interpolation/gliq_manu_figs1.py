@@ -1045,9 +1045,9 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    # eutectic_fig()
+    eutectic_fig()
     # inter_figure()
-    inter_figure_filtered()
+    # inter_figure_filtered()
     # inter_figure_correction()
     # inter_figure_error_metrics()
     
@@ -1060,7 +1060,7 @@ def main():
     
     # Run binary L parameter analysis with different deviation metrics
     # metrics = ['mad', 'std', 'range', 'pairwise']
-    metrics = ['range']
+    # metrics = ['range']
     
     # for metric in metrics:
     #     print(f"\n{'='*50}")

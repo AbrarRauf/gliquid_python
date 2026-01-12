@@ -8,7 +8,8 @@ from scipy.interpolate import griddata
 
 dump_dir = "all_dumps/zrte_spec/"
 # df = pd.read_csv("ternary_gtx_test.csv")
-df = pd.read_csv(dump_dir + "ternary_gtx_test2.csv")
+# df = pd.read_csv(dump_dir + "ternary_gtx_test2.csv")
+df = pd.read_csv(dump_dir + "ternary_gtx_test3.csv")
 
 
 print(df)

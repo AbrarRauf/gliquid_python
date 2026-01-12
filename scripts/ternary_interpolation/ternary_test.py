@@ -10,6 +10,7 @@ from sklearn.cluster import DBSCAN
 import pprint
 
 work_dir = "all_dumps/ternary_test/"
+# make sure the test_set.xlsx file is in the working directory
 
 # set to easily identify files associated with different test runs
 test_prefix = "A"

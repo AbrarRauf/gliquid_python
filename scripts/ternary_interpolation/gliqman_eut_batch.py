@@ -98,7 +98,7 @@ def main():
 
         print(binary_L_dict)
         plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
-                                    L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5.0, delta=0.01, fit_or_pred=fitorpred)
+                                    L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=1.0, delta=0.01, fit_or_pred=fitorpred)
 
         plotter.interpolate()
         plotter.process_data()

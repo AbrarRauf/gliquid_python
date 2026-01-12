@@ -76,6 +76,7 @@ def build_ternary_thermodynamic_expressions(
     """
     x_a = 1 - x1 - x2
     x_b = x1
+    tern_sys = ["Fe", "Ce", "Si"]
     x_c = x2
 
     # Reference Gibbs energy
@@ -457,7 +458,8 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         fusion_temp = pd.read_json(os.path.join(fusion_temps_file), typ='series')
         tern_temp = fusion_temp[self.tern_sys].values 
-        max_temp = round(np.max(tern_temp) + 500)
+        # max_temp = round(np.max(tern_temp))
+        max_temp = round(np.max(tern_temp) + 200)
         min_temp = round(np.min(tern_temp))
         self.conds = [np.min(np.array([0, min_temp - 200])) - self.temp_slider[0], max_temp + self.temp_slider[1]]
         self.T_grid = np.arange(self.conds[0], self.conds[1] + self.T_incr, self.T_incr)
