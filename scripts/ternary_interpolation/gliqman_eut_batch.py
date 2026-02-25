@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test_eut_final/"
+dump_dir = "all_dumps/gliq_manu_test_eut_ultimate/"
 read_dir = "all_dumps/binary_fits/"
 
 if not os.path.exists(dump_dir):
@@ -30,7 +30,8 @@ def main():
     tern_param_format = "combined"
     interp = "linear"
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
     ternary_sys_list = [
@@ -98,7 +99,7 @@ def main():
 
         print(binary_L_dict)
         plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type=interp, param_format=tern_param_format,
-                                    L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=1.0, delta=0.01, fit_or_pred=fitorpred)
+                                    L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5.0, delta=0.01, fit_or_pred=fitorpred)
 
         plotter.interpolate()
         plotter.process_data()
@@ -109,16 +110,23 @@ def main():
 
         df_list = plotter.equil_df_list
 
+        # Find the lowest temperature ternary eutectic (where all three components > 0)
         for i in range(len(df_list)):
             if df_list[i]['Phase'].iloc[0] == 'L':
-                eut_temps.append(df_list[i]['T'].iloc[0])
                 sub_df = (df_list[i][df_list[i]['Phase'] == 'L'])
                 x0_avg = sub_df['x0'].mean()
                 x1_avg = sub_df['x1'].mean()
-                comp = [x0_avg, x1_avg]
-                comp = ternary_to_cartesian(comp)
-                eut_comps.append(comp)
-                break
+                x2_avg = 1 - x0_avg - x1_avg
+                
+                # Check if this is a true ternary composition (none of the components are zero)
+                # Using a small tolerance to account for numerical precision
+                tolerance = 1e-6
+                if x0_avg > tolerance and x1_avg > tolerance and x2_avg > tolerance:
+                    eut_temps.append(df_list[i]['T'].iloc[0])
+                    comp = [x0_avg, x1_avg]
+                    comp = ternary_to_cartesian(comp)
+                    eut_comps.append(comp)
+                    break   
 
         tern_fig = plotter.plot_ternary()
         sys_name = "-".join(sorted_sys)

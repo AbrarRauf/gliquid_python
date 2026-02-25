@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test7_linear/"
+dump_dir = "all_dumps/gliq_manu_test_ultimate/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -39,11 +39,16 @@ def main():
     # print(spec_err_systems)
     # print(len(spec_err_systems))
 
+    only_include = ['Li', 'Be', 'B', 'C', 'Na', 'Mg', 'Al', 'Si', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni',
+                    'Cu', 'Zn', 'Ga', 'Ge', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
+                    'In', 'Sn', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er',
+                    'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Au', 'Hg', 'Tl', 'Pb', 'Th']
+
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
     interp = "linear"
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")
@@ -58,7 +63,10 @@ def main():
 
     meta_data = {}
     Error_dict = {}
+
     for tern_sys in ternary_sys_list:
+        if not all(elem in only_include for elem in tern_sys):
+            continue
         # tern_sys = ["Ba", "Mg", "Si"]
         # tern_sys = ["Ce", "Fe", "Si"]
         i = ternary_sys_list.index(tern_sys)
@@ -116,17 +124,20 @@ def main():
                     mae.append(params["mae"])
                     rmse.append(params["rmse"])
                     norm_mae.append(params["norm_mae"])
-                    norm_rmse.append(params["norm_rmse"])
-                elif bin_sys in binary_param_pred_df['system'].tolist():
-                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-                    fitorpred[bin_sys] = "pred"
-                    pred_tag = "Contains predicted"
-                elif flipped_sys in binary_param_pred_df['system'].tolist():
-                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-                    fitorpred[bin_sys] = "pred"
-                    pred_tag = "Contains predicted"
+                    norm_rmse.append(params["norm_rmse"])   
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
+
+                # elif bin_sys in binary_param_pred_df['system'].tolist():
+                #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                #     fitorpred[bin_sys] = "pred"
+                #     pred_tag = "Contains predicted"
+                # elif flipped_sys in binary_param_pred_df['system'].tolist():
+                #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                #     fitorpred[bin_sys] = "pred"
+                #     pred_tag = "Contains predicted"
+                # else:
+                #     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
                 # Extract parameters and flip L1 signs if order was changed
                 L0_a = float(params["L0_a"])
@@ -151,7 +162,7 @@ def main():
             concat_df = pd.concat(df_list, ignore_index=True)
             sub_df = concat_df[concat_df["Phase"] == congruent_phase]
             tern_fig = plotter.plot_ternary()
-            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}2_system.html', auto_open=False)
+            ploff.plot(tern_fig, filename=dump_dir + f'{"-".join(sorted_sys)}_{interp}_system.html', auto_open=False)
             if sub_df.empty:
                 raise Exception("MPDS congruent phase not on the hull!")
 
@@ -167,7 +178,7 @@ def main():
             sub_df2 = sub_df2.iloc[0]
             temp2 = sub_df2["T"] + 273.15
             print(temp, temp2)
-            if abs(temp - temp2) < 20:
+            if abs(temp - temp2) < 15:
                 types.append("congruent")
             else:
                 types.append("non-congruent")

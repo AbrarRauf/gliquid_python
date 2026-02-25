@@ -51,7 +51,7 @@ class HSX:
         self.points = self.df[['X [Fraction]', 'S [J/mol/K]', 'H [J/mol]']].to_numpy()
         self.scaler = h_scaler / s_scaler
 
-    def hull(self) -> np.ndarray:
+    def hull_old(self) -> np.ndarray:
         """Computes the lower convex hull of an N-dimensional Xi-S-H space."""
         dim = self.points.shape[1]
         
@@ -88,6 +88,47 @@ class HSX:
         lower_hull_filter2 = [s for s in lower_hull_filter1 
                               if sum((v == im).all() for v in self.points[s] for im in self.inter_points) < 3]
         self.simplices = np.array(lower_hull_filter2)
+        return self.simplices
+
+    def hull(self) -> np.ndarray:
+        """Computes the lower convex hull of an N-dimensional Xi-S-H space."""
+        dim = self.points.shape[1]
+
+        # Initialize bounds for Xi
+        x_list = [[1 if j == i - 1 else 0 for j in range(dim - 2)] for i in range(dim - 1)]
+        x_list[0] = [0] * (dim - 2)
+
+        # Compute S and H bounds
+        s_min, s_extr = np.min(self.points[:, -2]), np.max([self.liq_points[0, -2], self.liq_points[-1, -2]])
+        h_max = np.max(self.points[:, -1])
+        upper_bound = 20 * h_max
+
+        # Generate fictitious points
+        liq_fict_coords = np.column_stack((self.liq_points[:, 0], self.liq_points[:, 1],
+                                np.full(len(self.liq_points), upper_bound)))
+        fict_coords = np.vstack([
+            np.append(x_list[i], [s_min, upper_bound]) for i in range(dim - 1)
+            ] + [
+            np.append(x_list[i], [s_extr, upper_bound]) for i in range(dim - 1)
+        ])
+
+        fict_points = np.vstack((fict_coords, liq_fict_coords))
+        new_points = np.vstack((self.points, fict_points))
+        # Compute convex hull
+        new_hull = ConvexHull(new_points, qhull_options="Qt i")
+
+        n_real = len(self.points)
+        all_simplices = new_hull.simplices
+
+        # Filter 1: discard simplices with any fictitious vertex (index >= n_real)
+        mask_no_fict = np.all(all_simplices < n_real, axis=1)
+        real_simplices = all_simplices[mask_no_fict]
+
+        # Filter 2: discard simplices where all 3 vertices are intermetallic (non-liquid) points
+        is_inter = (self.df['Phase'] != 'L').values
+        inter_counts = np.sum(is_inter[real_simplices], axis=1)
+        self.simplices = real_simplices[inter_counts < 3]
+
         return self.simplices
 
     def compute_tx(self) -> tuple[pd.DataFrame, list, np.ndarray, np.ndarray]:

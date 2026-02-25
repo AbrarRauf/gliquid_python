@@ -902,6 +902,4 @@ class ternary_gtx_plotter(ternary_interpolation):
             temp = sub_df['T'] 
             melting_temps[phase] = temp
 
-        return melting_temps
-            
-
+        return melting_temps           

@@ -9,7 +9,7 @@ import json
 
 def eutectic_fig():
     # eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results_og.xlsx"
-    eut_path = "all_dumps/gliq_manu_test_eut_final/ternary_eutectic_results.xlsx"
+    eut_path = "all_dumps/gliq_manu_test_eut_ultimate/ternary_eutectic_results.xlsx"
 
     df_eut = pd.read_excel(eut_path)
     # columns_to_drop = ['Reference:']
@@ -193,11 +193,19 @@ def eutectic_fig():
 
 
 def inter_figure(): 
+    # Font settings - change these to customize appearance
+    TICK_LABEL_SIZE = 12  # Change this to resize tick labels
+    AXIS_LABEL_SIZE = 12  # Change this to resize axis labels
+    plt.rcParams['font.family'] = 'Arial'  # Set font to Arial
+    
     # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
     # meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
-    inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
+    # inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
+    # meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
+
+    inter_path = "all_dumps/gliq_manu_test_ultimate/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_test_ultimate/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
     # df = pd.read_csv(inter_path)
@@ -218,6 +226,11 @@ def inter_figure():
     )
 
     print(df.head())
+
+    # count the number of rows that are congruent and non-congruent under column name "type"
+    print(df['type'].value_counts())
+
+    print(len(df))
     
     # Calculate and print RMSE between interpolated and MPDS values
     differences = df['gliq_melting_temp'] - df['melting_point_k']
@@ -255,7 +268,6 @@ def inter_figure():
     texts = []
     for _, row in df.iterrows():
         texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
-
     # Adjust text to reduce overlaps
     adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
@@ -264,14 +276,21 @@ def inter_figure():
     max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max())
     plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
 
-    # Axis labels and title
-    plt.xlabel('MPDS Congruent Melting Temperature (K)')
-    plt.ylabel('Interpolated Melting Temperature (K)')
+    
+    # Axis labels (bold, using variables defined at top of function)
+    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+    plt.ylabel('Predicted Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+
+    # Tick labels (bold, using variable defined at top of function)
+    plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_SIZE)
+    ax = plt.gca()
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight('bold')
 
     # modify x-axis limits
     # plt.xlim(min_val, max_val - 150)
-    plt.xlim(300, 2500)
-    plt.ylim(300, 2500)
+    plt.xlim(750, 2500)
+    plt.ylim(750, 2500)
 
     # # Custom legend for congruency
     # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
@@ -364,6 +383,9 @@ def inter_figure_filtered():
     plt.xlabel('MPDS Congruent Melting Temperature (K)')
     plt.ylabel('Interpolated Melting Temperature (K)')
 
+
+
+
     # modify x-axis limits
     plt.xlim(300, 2500)
     plt.ylim(300, 2500)
@@ -438,7 +460,6 @@ def inter_figure_correction():
     # Axis labels and formatting
     plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
     plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
-    plt.tick_params(axis='both', which='major', labelsize=12)
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -480,7 +501,6 @@ def inter_figure_correction():
     # Axis labels and formatting
     plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
     plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
-    plt.tick_params(axis='both', which='major', labelsize=12)
     plt.legend()
     plt.tight_layout()
     plt.show()
