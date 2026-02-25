@@ -165,7 +165,7 @@ def hsx_hyperplane_eqns(points, lower_hull, multiplier, partial_indices):
 
     # create a new list of partial formulae that only contains the elements from the list of partial_indices
     partial_formulae = [partial_formulae[i] for i in partial_indices]
-    print("partial derivatives: ", partial_formulae)
+    # print("partial derivatives: ", partial_formulae)
 
     # initialize an empty list to store all the to be computed partial derivatives
     all_partial_derivatives = []
@@ -642,7 +642,7 @@ def gliq_lowerhull(points, liq_points, intermetallics):
 
     return arr_lowerhull
 
-def gliq_lowerhull3(points, vertical_simplices = False):
+def gliq_lowerhull3_old(points, vertical_simplices = False):
     # Function to calculate the general lower convex hull of an N-dimensional Xi-S-H space
     # Input: points = array of coordinates of the points in the Xi-S-H space
     # Output: simplices = array of simplices that form the lower convex hull of the Xi-S-H space
@@ -710,6 +710,59 @@ def gliq_lowerhull3(points, vertical_simplices = False):
                 lower_hull_filter1.append(simplex)
 
     arr_lowerhull = np.array(lower_hull_filter1) 
+
+    return arr_lowerhull
+
+def gliq_lowerhull3(points, vertical_simplices = False):
+    # Function to calculate the general lower convex hull of an N-dimensional Xi-S-H space
+    # Input: points = array of coordinates of the points in the Xi-S-H space
+    # Output: simplices = array of simplices that form the lower convex hull of the Xi-S-H space
+    # Uses vectorized operations for efficiency (avoids iterative row comparisons)
+    
+    n_real = len(points)  # Track number of real points for efficient filtering
+
+    sub_points = points[:, :-1]
+    sub_hull = ConvexHull(sub_points)
+    sub_hull_points = sub_points[sub_hull.vertices]
+    center = np.mean(sub_hull_points, axis=0)
+    sub_hull_points = np.vstack((sub_hull_points, center))
+
+    # Compute upper bound for fictitious points using single-pass ptp
+    h_data = points[:, -1]
+    h_max = np.max(h_data)
+    upper_bound = h_max + 10 * np.ptp(h_data)
+
+    # Create fictitious points with upper_bound H values
+    upper_bound_col = np.full((len(sub_hull_points), 1), upper_bound)
+    fake_points = np.hstack((sub_hull_points, upper_bound_col))
+    fake_points[-1, -1] += 0.5 * upper_bound  # Offset center point higher
+
+    new_points = np.vstack((points, fake_points))
+
+    # Compute convex hull with optimized qhull options
+    new_hull = ConvexHull(new_points, qhull_options="Qt i")
+
+    all_simplices = new_hull.simplices
+
+    # Filter 1: discard simplices with any fictitious vertex (index >= n_real)
+    # Vectorized boolean masking instead of iterative row comparison
+    mask_no_fict = np.all(all_simplices < n_real, axis=1)
+    real_simplices = all_simplices[mask_no_fict]
+
+    # Filter 2: optionally remove "vertical" simplices (uniform column values in x coordinates)
+    if not vertical_simplices:
+        # Get x coordinates for all simplices: shape (num_simplices, num_vertices, dim-1)
+        x_coords = points[real_simplices][:, :, :-1]
+        
+        # Check uniform columns with tolerance for floating-point robustness
+        first_row = x_coords[:, 0:1, :]  # shape (num_simplices, 1, dim-1)
+        uniform_columns = np.all(np.isclose(x_coords, first_row, rtol=1e-12, atol=1e-12), axis=1)
+        
+        # A simplex is "vertical" if ANY column is uniform
+        has_uniform = np.any(uniform_columns, axis=1)
+        arr_lowerhull = real_simplices[~has_uniform]
+    else:
+        arr_lowerhull = real_simplices
 
     return arr_lowerhull
 
@@ -981,7 +1034,7 @@ def hyperplane_eqns(points, lower_hull, multiplier, partial_indices):
 
     # create a new list of partial formulae that only contains the elements from the list of partial_indices
     partial_formulae = [partial_formulae[i] for i in partial_indices]
-    print("partial derivatives: ", partial_formulae)
+    # print("partial derivatives: ", partial_formulae)
 
     # initialize an empty list to store all the to be computed partial derivatives
     all_partial_derivatives = []

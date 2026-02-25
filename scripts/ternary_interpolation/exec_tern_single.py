@@ -39,7 +39,7 @@ def plot_ternary_system():
         f"{sorted_sys[2]}-{sorted_sys[0]}"
     ]
 
-    print(binary_sys_labels)
+    # print(binary_sys_labels)
 
     binary_L_dict = {}
 
@@ -85,16 +85,16 @@ def plot_ternary_system():
     # l0_tern = 40000
     # l0_tern = 100000
 
-    print(binary_L_dict)
+    # print(binary_L_dict)
     # plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
     #                               L_dict=binary_L_dict, temp_slider=[0, -250], T_incr=10, delta=0.025, fit_or_pred=fitorpred)
 
-    print(fitorpred)
+    # print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
                                   L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
-    print(plotter.hsx_df)
+    # print(plotter.hsx_df)
 
     # manual adjustment of solid phase entropies
     # s_zrte = -1.57
@@ -105,7 +105,7 @@ def plot_ternary_system():
 
     tern_fig = plotter.plot_ternary()
 
-    print(plotter.liq_plotting_df)
+    # print(plotter.liq_plotting_df)
     # update layout and remove axis and background
     tern_fig.update_layout(
         scene = dict(
@@ -120,7 +120,7 @@ def plot_ternary_system():
     # for i, bin_fig in enumerate(bin_fig_list):
     #     bin_fig.show()
 
-    print(plotter.equil_df_list)
+    # print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
     # inter_list = [spec_inter]
