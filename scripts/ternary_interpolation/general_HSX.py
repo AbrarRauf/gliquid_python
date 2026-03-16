@@ -28,11 +28,11 @@ from gliquid.binary import (
     linear_expr, exponential_expr, combined_expr)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
-from extensive_hull_main import gliq_lowerhull3
+from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2_optimized
 import random
+from auth import mpapi_key
 
-
-mpr = MPRester("Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ")  # Use environment variable for MP_API_KEY
+mpr = MPRester(mpapi_key)  
 
 R = 8.314  # J/(mol*K)
 
@@ -504,6 +504,15 @@ class GeneralInterpolation:
         # Sort elements alphabetically for consistency
         self.elements = sorted(elements)
         self.n_components = len(self.elements)
+        
+        # Interpolation requires at least 3 components (ternary or higher)
+        # For binary systems, use BinaryLiquid directly instead
+        if self.n_components < 3:
+            raise ValueError(
+                f"GeneralInterpolation requires at least 3 components (got {self.n_components}). "
+                "Binary systems should use BinaryLiquid directly, as there is no interpolation needed."
+            )
+        
         self.output_dir = output_dir
         self.grid_delta = grid_delta
         self.param_format = param_format
@@ -984,6 +993,8 @@ class GeneralInterpolation:
             'total_hsx_points': len(self.hsx_data) if self.hsx_data is not None else 0,
             **self.metadata
         }
+
+
 
 
 if __name__ == "__main__":

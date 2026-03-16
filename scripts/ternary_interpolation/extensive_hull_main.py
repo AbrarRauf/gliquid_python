@@ -478,6 +478,196 @@ def gen_hyperplane_eqns(points, lower_hull = [], direct_vertices = False, multip
     return all_hyperplane_eqns, all_partial_derivatives
 
 
+
+# ==============================================================================
+# Module-level cache for lambdified partial derivative functions
+# ==============================================================================
+_PARTIAL_DERIVATIVE_CACHE: dict = {}
+_HYPERPLANE_EQN_CACHE: dict = {}
+
+
+def _build_symbolic_partial_formulae(dim: int, partial_indices: list):
+    """
+    Build symbolic partial derivative formulae for a given dimension.
+    
+    This function performs the expensive symbolic computation once and
+    returns lambdified functions that can be reused efficiently.
+    
+    Args:
+        dim: Dimensionality of the points (number of columns).
+        partial_indices: Indices of the partial derivatives to compute.
+    
+    Returns:
+        Tuple of (lambdified_partials_dict, symbol_order) where:
+        - lambdified_partials_dict: Dict mapping index to lambdified function
+        - symbol_order: List of symbol names in order for function arguments
+    """
+    # Create symbols
+    x = smp.symbols(f'x0:{dim}')
+    
+    # A matrix symbols: a[j][i] where j is row, i is column
+    # Shape: dim rows, dim-1 columns (edge vectors)
+    A_symbols = [[smp.Symbol(f'a{j}{i}') for j in range(dim)] for i in range(dim - 1)]
+    A = np.array(A_symbols).T  # dim x (dim-1)
+    
+    # Reference point symbols
+    c = smp.symbols(f'c0:{dim}')
+    
+    # Build the matrix M = [A | x] for determinant computation
+    x_col = np.array(x).reshape(-1, 1)
+    M = np.hstack((A, x_col))
+    final_M = smp.Matrix(M)
+    
+    # Normal vector from determinant expansion
+    sym_normal_vec = smp.det(final_M).simplify()
+    
+    # Extract coefficients for each x_i
+    normal_vec = [sym_normal_vec.coeff(f'x{i}') for i in range(dim)]
+    
+    # Intercept: -n · c
+    intercept = -sum(normal_vec[i] * c[i] for i in range(dim))
+    
+    # Hyperplane equation: n · x + intercept = 0
+    hyperplane_eqn = sym_normal_vec + intercept
+    
+    # Solve for x_{dim-1} (the last coordinate, typically H)
+    solution = smp.solve(hyperplane_eqn, x[dim - 1])
+    if not solution:
+        raise ValueError(f"Could not solve hyperplane equation for dimension {dim}")
+    
+    solution_expr = solution[0]
+    
+    # Compute partial derivatives: d(x_{dim-1})/d(x_i) for each i in partial_indices
+    partial_formulae = {}
+    for i in partial_indices:
+        if i < dim - 1:
+            partial_formulae[i] = smp.diff(solution_expr, x[i])
+    
+    # Create the ordered list of all symbols for lambdify
+    # Order: all A elements (column-major), then all c elements
+    all_symbols = []
+    for i in range(dim - 1):  # columns
+        for j in range(dim):  # rows
+            all_symbols.append(A[j, i])
+    for ci in c:
+        all_symbols.append(ci)
+    
+    symbol_names = [str(s) for s in all_symbols]
+    
+    # Lambdify each partial derivative
+    lambdified_partials = {}
+    for idx, expr in partial_formulae.items():
+        lambdified_partials[idx] = smp.lambdify(all_symbols, expr, modules='numpy')
+    
+    # Also lambdify the hyperplane equation coefficients if needed
+    hyperplane_coeffs = [hyperplane_eqn.coeff(xi) for xi in x]
+    remaining = hyperplane_eqn - sum(hyperplane_eqn.coeff(xi) * xi for xi in x)
+    hyperplane_coeffs.append(remaining)
+    
+    return lambdified_partials, symbol_names, hyperplane_coeffs
+
+
+def _get_cached_partial_functions(dim: int, partial_indices: list):
+    """
+    Get cached lambdified partial derivative functions, building them if needed.
+    
+    Uses module-level cache to avoid recomputing symbolic expressions.
+    """
+    cache_key = (dim, tuple(sorted(partial_indices)))
+    
+    if cache_key not in _PARTIAL_DERIVATIVE_CACHE:
+        lambdified_partials, symbol_names, _ = _build_symbolic_partial_formulae(dim, partial_indices)
+        _PARTIAL_DERIVATIVE_CACHE[cache_key] = (lambdified_partials, symbol_names)
+    
+    return _PARTIAL_DERIVATIVE_CACHE[cache_key]
+
+
+def gen_hyperplane_eqns2_optimized(
+    points: np.ndarray,
+    lower_hull: list = None,
+    direct_vertices: bool = False,
+    multiplier: float = 1.0,
+    partial_indices: list = None,
+    evaluate_eqns: bool = False,
+    evaluate_partials: bool = True
+):
+    """
+    Optimized version of gen_hyperplane_eqns2.
+    
+    Computes hyperplane inclinations (partial derivatives) for lower hull simplices.
+    Uses cached lambdified functions for fast evaluation.
+    
+    Args:
+        points: Array of shape (n_points, dim) with coordinates.
+        lower_hull: List of simplices (index arrays). Required if direct_vertices=False.
+        direct_vertices: If True, treat `points` as a single simplex's vertices.
+        multiplier: Scaling factor for partial derivatives (e.g., for unit conversion).
+        partial_indices: Which partial derivatives to compute (default [0] for dH/dx0).
+        evaluate_eqns: Whether to evaluate full hyperplane equations.
+        evaluate_partials: Whether to evaluate partial derivatives.
+    
+    Returns:
+        Tuple of (all_hyperplane_eqns, all_partial_derivatives).
+    """
+    if lower_hull is None:
+        lower_hull = []
+    if partial_indices is None:
+        partial_indices = [0]
+    
+    dim = points.shape[1]
+    
+    # Get vertices for all simplices
+    if direct_vertices:
+        all_vertices = np.array([points])
+    else:
+        if len(lower_hull) == 0:
+            return [], []
+        all_vertices = np.array([points[simplex] for simplex in lower_hull])
+    
+    n_simplices = len(all_vertices)
+    
+    # Get cached lambdified functions
+    lambdified_partials, symbol_names = _get_cached_partial_functions(dim, partial_indices)
+    
+    all_hyperplane_eqns = []
+    all_partial_derivatives = []
+    
+    # Precompute argument arrays for all simplices
+    # This enables potential vectorization in the future
+    for vertices in all_vertices:
+        # Edge vectors: v[i] = vertices[i+1] - vertices[0]
+        edge_vectors = np.array([vertices[i + 1] - vertices[0] for i in range(dim - 1)])
+        edge_vectors = np.round(edge_vectors, 5)
+        
+        # Build argument array in the order expected by lambdified functions
+        # Order: A elements column-major (edge vectors as columns), then c elements
+        args = []
+        for i in range(dim - 1):  # columns (edge vectors)
+            for j in range(dim):  # rows (coordinates)
+                args.append(edge_vectors[i, j])
+        for j in range(dim):  # reference point (vertices[0])
+            args.append(vertices[0, j])
+        
+        # Evaluate partial derivatives
+        if evaluate_partials:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                for idx in partial_indices:
+                    if idx in lambdified_partials:
+                        try:
+                            result = lambdified_partials[idx](*args)
+                            result = result * multiplier
+                            # Handle potential inf/nan
+                            if np.isfinite(result):
+                                all_partial_derivatives.append(result)
+                            else:
+                                all_partial_derivatives.append(0.0)
+                        except (ZeroDivisionError, FloatingPointError):
+                            all_partial_derivatives.append(0.0)
+    
+    return all_hyperplane_eqns, all_partial_derivatives
+
+
 def gen_hyperplane_eqns2(points, lower_hull=[], direct_vertices=False, multiplier=1, partial_indices=[0], evaluate_eqns=False, evaluate_partials=True):
     dim = points.shape[1]
 
