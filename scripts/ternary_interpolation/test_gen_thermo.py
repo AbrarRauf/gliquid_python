@@ -1,5 +1,5 @@
 import json
-from general_HSX import ThermodynamicExpressionBuilder
+from general_HSX import ThermoExprBuilder
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
 
 

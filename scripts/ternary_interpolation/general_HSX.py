@@ -109,7 +109,7 @@ INTERPOLATION_SCHEMES: Dict[str, Callable] = {
 # THERMODYNAMIC EXPRESSION BUILDER CLASS
 # ==============================================================================
 
-class ThermodynamicExpressionBuilder:
+class ThermoExprBuilder:
     """
     Class for building thermodynamic expressions for multi-component systems.
     
@@ -471,7 +471,7 @@ if __name__ == "__main__":
     # =========================================================================
     # NEW CLASS-BASED API (recommended)
     # =========================================================================
-    builder = ThermodynamicExpressionBuilder(
+    builder = ThermoExprBuilder(
         n_components=4,
         param_format='combined',
         interp_scheme='linear'
