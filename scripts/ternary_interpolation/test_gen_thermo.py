@@ -24,7 +24,7 @@ binary_params = {
     (2, 3): [1400, 0, 700, 0],
 }
 
-builder = ThermodynamicExpressionBuilder(
+builder = ThermoExprBuilder(
     n_components=4,
     param_format='combined',
     interp_scheme='linear'

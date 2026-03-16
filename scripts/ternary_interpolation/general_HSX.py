@@ -345,7 +345,7 @@ class ThermoExprBuilder:
         
         return weight * weight_factor * rk_expr
     
-    def build(self) -> 'ThermodynamicExpressionBuilder':
+    def build(self) -> 'ThermoExprBuilder':
         """
         Build all thermodynamic expressions.
         
