@@ -29,7 +29,7 @@ from gliquid.binary import (
     linear_expr, exponential_expr, combined_expr)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
-from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2, direct_lowerhull
+from extensive_hull_main import gliq_lowerhull3
 import random
 
 # mpr = MPRester(MAPI_KEY)
@@ -76,7 +76,6 @@ def build_ternary_thermodynamic_expressions(
     """
     x_a = 1 - x1 - x2
     x_b = x1
-    tern_sys = ["Fe", "Ce", "Si"]
     x_c = x2
 
     # Reference Gibbs energy
