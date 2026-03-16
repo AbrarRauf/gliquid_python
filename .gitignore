@@ -5,3 +5,4 @@ scripts/ternary_interpolation/__pycache__/
 data/
 all_dumps/
 .vscode/
+scripts/ternary_interpolation/test_output/

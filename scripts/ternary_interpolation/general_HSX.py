@@ -441,67 +441,628 @@ class ThermoExprBuilder:
         
         args = list(self.x) + [self.t]
         return sp.lambdify(args, expr, 'numpy')
+
+
+# ==============================================================================
+# GENERAL N-COMPONENT INTERPOLATION CLASS
+# ==============================================================================
+
+class GeneralInterpolation:
+    """
+    General n-component liquid solution interpolation.
     
-
-
+    Takes a chemical system (list of element symbols) and binary interaction
+    parameters to compute thermodynamic HSX data over a composition grid.
+    Also retrieves DFT formation energies of solid phases from Materials Project.
+    
+    This class uses ThermoExprBuilder internally for symbolic expression building
+    but does not inherit from it - it's a composition-based design.
+    
+    Attributes:
+        elements: List of element symbols in sorted alphabetical order.
+        n_components: Number of components in the system.
+        output_dir: Directory for caching MP data and outputs.
+        binary_pairs: List of binary pair strings (e.g., ["Al-Cu", "Al-Mg"]).
+        hsx_data: DataFrame containing the final HSX dataset.
+        
+    Example:
+        >>> interp = GeneralInterpolation(
+        ...     elements=['Al', 'Cu', 'Si', 'Mg'],
+        ...     output_dir='./output'
+        ... )
+        >>> interp.set_binary_params({
+        ...     'Al-Cu': [1000, 0, 500, 0],
+        ...     'Al-Mg': [1500, 0, 700, 0],
+        ...     ...
+        ... })
+        >>> interp.interpolate()
+        >>> df = interp.hsx_data
+    """
+    
+    def __init__(
+        self,
+        elements: List[str],
+        output_dir: str,
+        grid_delta: float = 0.025,
+        param_format: str = 'linear',
+        interp_scheme: str = 'linear',
+        tau: float = 8000,
+        mp_api_key: Optional[str] = None
+    ):
+        """
+        Initialize the interpolation system.
+        
+        Args:
+            elements: List of element symbols (e.g., ['Al', 'Cu', 'Si', 'Mg']).
+            output_dir: Directory for caching data and saving outputs.
+            grid_delta: Composition grid spacing (default 0.025).
+            param_format: L parameter format ('linear', 'exponential', 'combined').
+            interp_scheme: Interpolation scheme ('linear', 'muggianu', 'kohler').
+            tau: Time constant for combined format (default 8000).
+            mp_api_key: Materials Project API key (uses default if None).
+        """
+        # Sort elements alphabetically for consistency
+        self.elements = sorted(elements)
+        self.n_components = len(self.elements)
+        self.output_dir = output_dir
+        self.grid_delta = grid_delta
+        self.param_format = param_format
+        self.interp_scheme = interp_scheme
+        self.tau = tau
+        
+        # Generate binary pairs as element strings (sorted alphabetically)
+        self._binary_pairs_indices = list(combinations(range(self.n_components), 2))
+        self.binary_pairs = [
+            f"{self.elements[i]}-{self.elements[j]}" 
+            for i, j in self._binary_pairs_indices
+        ]
+        
+        # Create mapping from string pairs to index pairs
+        self._pair_str_to_idx = {
+            pair: idx_pair 
+            for pair, idx_pair in zip(self.binary_pairs, self._binary_pairs_indices)
+        }
+        
+        # Materials Project client
+        self._mp_api_key = mp_api_key
+        self._mpr = None  # Lazy initialization
+        
+        # Data storage
+        self.fusion_data: Optional[Dict[str, Dict[str, float]]] = None
+        self.binary_L_params: Optional[Dict[str, List[float]]] = None
+        self.binary_fit_types: Optional[Dict[str, str]] = None
+        self.higher_order_params: Dict[Tuple[int, ...], List[float]] = {}
+        
+        # Output storage
+        self.liquid_hsx: Optional[pd.DataFrame] = None
+        self.solid_hsx: Optional[pd.DataFrame] = None
+        self.hsx_data: Optional[pd.DataFrame] = None
+        self.metadata: Dict[str, any] = {}
+        
+        # Internal builder (created during interpolation)
+        self._expr_builder: Optional[ThermoExprBuilder] = None
+        
+        print(f"Initialized GeneralInterpolation for system: {'-'.join(self.elements)}")
+        print(f"  Components: {self.n_components}")
+        print(f"  Binary pairs: {self.binary_pairs}")
+    
+    @property
+    def mpr(self) -> MPRester:
+        """Lazy initialization of Materials Project client."""
+        if self._mpr is None:
+            if self._mp_api_key:
+                self._mpr = MPRester(self._mp_api_key)
+            else:
+                self._mpr = mpr  # Use module-level default
+        return self._mpr
+    
+    # =========================================================================
+    # Data Loading
+    # =========================================================================
+    
+    def load_fusion_data(self) -> 'GeneralInterpolation':
+        """
+        Load fusion enthalpies and temperatures for all elements from config files.
+        
+        Returns:
+            self (for method chaining)
+        """
+        with open(fusion_enthalpies_file) as f:
+            all_enthalpies = json.load(f)
+        with open(fusion_temps_file) as f:
+            all_temps = json.load(f)
+        
+        self.fusion_data = {
+            'enthalpies': [all_enthalpies[el] for el in self.elements],
+            'temperatures': [all_temps[el] for el in self.elements],
+        }
+        
+        # Compute entropies: S_fus = H_fus / T_fus
+        self.fusion_data['entropies'] = [
+            h / t for h, t in zip(
+                self.fusion_data['enthalpies'], 
+                self.fusion_data['temperatures']
+            )
+        ]
+        
+        return self
+    
+    def set_binary_params(
+        self,
+        L_params: Dict[str, List[float]],
+        fit_types: Optional[Dict[str, str]] = None
+    ) -> 'GeneralInterpolation':
+        """
+        Set binary interaction parameters.
+        
+        Args:
+            L_params: Dict mapping binary pair strings to [L0_a, L0_b, L1_a, L1_b].
+                Keys should be element pairs like "Al-Cu" (alphabetically sorted).
+            fit_types: Optional dict mapping pair strings to "fit" or "pred".
+        
+        Returns:
+            self (for method chaining)
+        
+        Raises:
+            ValueError: If not all binary pairs have parameters.
+        """
+        # Normalize keys to alphabetical order
+        normalized_params = {}
+        for key, params in L_params.items():
+            parts = key.split('-')
+            normalized_key = '-'.join(sorted(parts))
+            normalized_params[normalized_key] = params
+        
+        # Check all pairs are provided
+        missing = set(self.binary_pairs) - set(normalized_params.keys())
+        if missing:
+            raise ValueError(f"Missing L parameters for binary pairs: {missing}")
+        
+        self.binary_L_params = normalized_params
+        self.binary_fit_types = fit_types or {pair: 'pred' for pair in self.binary_pairs}
+        
+        return self
+    
+    def add_higher_order_params(
+        self,
+        component_indices: Tuple[int, ...],
+        params: List[float]
+    ) -> 'GeneralInterpolation':
+        """
+        Add higher-order interaction parameters (ternary, quaternary, etc.).
+        
+        Args:
+            component_indices: Tuple of component indices (e.g., (0, 1, 2) for ternary).
+            params: [H_param, S_param] or similar format.
+        
+        Returns:
+            self (for method chaining)
+        """
+        self.higher_order_params[tuple(sorted(component_indices))] = params
+        return self
+    
+    # =========================================================================
+    # Composition Grid Generation
+    # =========================================================================
+    
+    def _generate_composition_grid(self) -> np.ndarray:
+        """
+        Generate an n-dimensional composition grid where sum(x_i) = 1.
+        
+        Returns:
+            Array of shape (n_points, n_components) with valid compositions.
+        """
+        # Create 1D grid
+        steps = np.arange(0, 1 + self.grid_delta, self.grid_delta)
+        
+        # Generate all combinations
+        grids = np.meshgrid(*[steps] * self.n_components)
+        compositions = np.stack([g.flatten() for g in grids], axis=1)
+        
+        # Filter to valid compositions (sum ≈ 1)
+        sums = compositions.sum(axis=1)
+        valid_mask = np.isclose(sums, 1.0, atol=1e-6)
+        valid_compositions = compositions[valid_mask]
+        
+        # Round to avoid floating point issues
+        decimal_places = max(2, -int(np.log10(self.grid_delta)))
+        valid_compositions = np.round(valid_compositions, decimal_places)
+        
+        return valid_compositions
+    
+    # =========================================================================
+    # Liquid HSX Computation
+    # =========================================================================
+    
+    def _build_expressions(self) -> ThermoExprBuilder:
+        """Build thermodynamic expressions using ThermoExprBuilder."""
+        if self.fusion_data is None:
+            self.load_fusion_data()
+        
+        builder = ThermoExprBuilder(
+            n_components=self.n_components,
+            param_format=self.param_format,
+            interp_scheme=self.interp_scheme,
+            tau=self.tau
+        )
+        
+        # Set reference Gibbs energies
+        builder.set_reference_gibbs_from_fusion(
+            self.fusion_data['enthalpies'],
+            self.fusion_data['temperatures']
+        )
+        
+        # Convert string-keyed params to index-keyed params
+        if self.binary_L_params is not None:
+            index_params = {
+                self._pair_str_to_idx[pair]: params
+                for pair, params in self.binary_L_params.items()
+            }
+            builder.set_binary_L_params(index_params)
+        
+        # Add higher-order terms
+        for indices, params in self.higher_order_params.items():
+            # Assume params = [H, S] -> expression = H - T*S
+            expr = params[0] - builder.t * params[1] if len(params) > 1 else params[0]
+            builder.add_higher_order_term(indices, expr)
+        
+        builder.build()
+        return builder
+    
+    def compute_liquid_hsx(self) -> pd.DataFrame:
+        """
+        Compute liquid phase HSX data on the composition grid.
+        
+        Returns:
+            DataFrame with columns: x0, x1, ..., x[n-2], H, S, 'Phase Name'
+        """
+        # Build expressions
+        self._expr_builder = self._build_expressions()
+        
+        # Generate composition grid
+        compositions = self._generate_composition_grid()
+        
+        # Get lambdified functions
+        h_func = self._expr_builder.lambdify('h_liquid')
+        s_func = self._expr_builder.lambdify('s_liquid')
+        
+        # Prepare evaluation arguments
+        # T = mean melting temperature
+        mean_temp = np.mean(self.fusion_data['temperatures'])
+        
+        # Independent compositions: x0, x1, ..., x[n-2]
+        x_indep = [compositions[:, i] for i in range(self.n_components - 1)]
+        eval_args = x_indep + [mean_temp]
+        
+        # Evaluate with error suppression for edge cases
+        with np.errstate(divide='ignore', invalid='ignore'):
+            h_values = h_func(*eval_args)
+            s_values = s_func(*eval_args)
+        
+        # Replace inf/nan with 0
+        h_values = np.where(np.isfinite(h_values), h_values, 0)
+        s_values = np.where(np.isfinite(s_values), s_values, 0)
+        
+        # Build DataFrame
+        data = {}
+        for i in range(self.n_components - 1):
+            data[f'x{i}'] = compositions[:, i]
+        data['H'] = h_values
+        data['S'] = s_values
+        data['Phase Name'] = 'L'
+        
+        self.liquid_hsx = pd.DataFrame(data)
+        return self.liquid_hsx
+    
+    # =========================================================================
+    # Solid Formation Energies from Materials Project
+    # =========================================================================
+    
+    def _get_mp_entries(self, use_cache: bool = True) -> List[dict]:
+        """
+        Fetch computed structure entries from Materials Project.
+        
+        Args:
+            use_cache: If True, load from cache file if available.
+        
+        Returns:
+            List of serialized ComputedStructureEntry dicts.
+        """
+        # Ensure output directory exists
+        cache_dir = os.path.join(self.output_dir, 'mp_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        system_name = '-'.join(self.elements)
+        cache_path = os.path.join(cache_dir, f"{system_name}_entries.json")
+        
+        if use_cache and os.path.exists(cache_path):
+            print(f"Loading MP entries from cache: {cache_path}")
+            with open(cache_path, 'r') as f:
+                return json.load(f)
+        
+        print(f"Fetching MP entries for {system_name}...")
+        entries = self.mpr.get_entries_in_chemsys(self.elements)
+        sanitized = jsanitize(entries)
+        
+        with open(cache_path, 'w') as f:
+            json.dump(sanitized, f)
+        
+        return sanitized
+    
+    def fetch_solid_formation_energies(self, use_cache: bool = True) -> pd.DataFrame:
+        """
+        Fetch formation energies of stable solid phases from Materials Project.
+        
+        Args:
+            use_cache: If True, use cached MP data if available.
+        
+        Returns:
+            DataFrame with columns: x0, x1, ..., x[n-2], H, S, 'Phase Name'
+        """
+        entries_data = self._get_mp_entries(use_cache)
+        entries = [ComputedStructureEntry.from_dict(e) for e in entries_data]
+        
+        # Filter problematic entries (e.g., Mg with 149 atoms)
+        if "Mg" in self.elements:
+            entries = [e for e in entries if e.composition.get("Mg", 0) != 149]
+        
+        # Build phase diagram
+        phase_diagram = PhaseDiagram(entries)
+        stable_entries = phase_diagram.stable_entries
+        
+        # Count compounds with all components present
+        n_full_compounds = sum(
+            1 for e in stable_entries 
+            if len(e.composition.elements) == self.n_components
+        )
+        self.metadata['n_full_compounds'] = n_full_compounds
+        
+        # Extract formation energies and compositions
+        phase_names = []
+        compositions_list = []
+        formation_energies = []
+        
+        element_objects = [Element(el) for el in self.elements]
+        
+        for entry in stable_entries:
+            formula = entry.composition.reduced_formula
+            comp = Composition(formula)
+            entry_elements = comp.elements
+            
+            # Formation energy in J/mol (converted from eV/atom)
+            form_energy = phase_diagram.get_form_energy_per_atom(entry) * 96485
+            formation_energies.append(form_energy)
+            
+            # Get atomic fractions for each element
+            atom_fracs = []
+            for element in element_objects:
+                if element in entry_elements:
+                    atom_fracs.append(comp.get_atomic_fraction(element))
+                else:
+                    atom_fracs.append(0.0)
+            
+            compositions_list.append(atom_fracs)
+            phase_names.append(formula)
+        
+        compositions_arr = np.array(compositions_list)
+        
+        # Track deepest formation energy
+        self.metadata['deepest_formation_energy'] = min(formation_energies)
+        
+        # Build DataFrame (exclude last composition column since it's dependent)
+        data = {}
+        for i in range(self.n_components - 1):
+            data[f'x{i}'] = compositions_arr[:, i]
+        data['H'] = formation_energies
+        data['S'] = [0.0] * len(formation_energies)  # Solids have S=0 in this model
+        data['Phase Name'] = phase_names
+        
+        df = pd.DataFrame(data)
+        
+        # Keep only lowest energy entry for each phase
+        df = df.loc[df.groupby('Phase Name')['H'].idxmin()]
+        df = df.reset_index(drop=True)
+        
+        self.solid_hsx = df
+        return self.solid_hsx
+    
+    # =========================================================================
+    # Main Interpolation Pipeline
+    # =========================================================================
+    
+    def interpolate(self, use_mp_cache: bool = True) -> 'GeneralInterpolation':
+        """
+        Run the full interpolation pipeline.
+        
+        This method:
+        1. Loads fusion data (if not already loaded)
+        2. Computes liquid phase HSX on composition grid
+        3. Fetches solid formation energies from Materials Project
+        4. Combines into final HSX dataset
+        
+        Args:
+            use_mp_cache: Whether to use cached MP data.
+        
+        Returns:
+            self (for method chaining)
+        """
+        print(f"\n{'='*60}")
+        print(f"Running interpolation for {'-'.join(self.elements)}")
+        print(f"{'='*60}")
+        
+        # Step 1: Load fusion data
+        if self.fusion_data is None:
+            print("\n[1/3] Loading fusion data...")
+            self.load_fusion_data()
+        else:
+            print("\n[1/3] Fusion data already loaded")
+        
+        # Step 2: Compute liquid HSX
+        print("\n[2/3] Computing liquid phase HSX...")
+        self.compute_liquid_hsx()
+        print(f"       Generated {len(self.liquid_hsx)} liquid phase points")
+        
+        # Step 3: Fetch solid formation energies
+        print("\n[3/3] Fetching solid formation energies...")
+        self.fetch_solid_formation_energies(use_cache=use_mp_cache)
+        print(f"       Found {len(self.solid_hsx)} stable solid phases")
+        
+        # Combine dataframes
+        self.hsx_data = pd.concat(
+            [self.liquid_hsx, self.solid_hsx], 
+            ignore_index=True
+        )
+        self.hsx_data = self.hsx_data.drop_duplicates()
+        self.hsx_data = self.hsx_data.reset_index(drop=True)
+        
+        print(f"\nInterpolation complete!")
+        print(f"  Total HSX points: {len(self.hsx_data)}")
+        print(f"  Phases: {self.hsx_data['Phase Name'].nunique()}")
+        
+        return self
+    
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
+    
+    def get_composition_columns(self) -> List[str]:
+        """Get list of composition column names."""
+        return [f'x{i}' for i in range(self.n_components - 1)]
+    
+    def element_to_index(self, element: str) -> int:
+        """Get index of an element in the sorted elements list."""
+        return self.elements.index(element)
+    
+    def index_to_element(self, index: int) -> str:
+        """Get element symbol from its index."""
+        return self.elements[index]
+    
+    def get_pair_elements(self, pair_str: str) -> Tuple[str, str]:
+        """Parse a binary pair string into element tuple."""
+        parts = pair_str.split('-')
+        return tuple(sorted(parts))
+    
+    def save_hsx(self, filename: Optional[str] = None) -> str:
+        """
+        Save the HSX data to a CSV file.
+        
+        Args:
+            filename: Output filename. If None, uses system name.
+        
+        Returns:
+            Path to saved file.
+        """
+        if self.hsx_data is None:
+            raise ValueError("No HSX data to save. Run interpolate() first.")
+        
+        if filename is None:
+            filename = f"{'-'.join(self.elements)}_hsx.csv"
+        
+        filepath = os.path.join(self.output_dir, filename)
+        self.hsx_data.to_csv(filepath, index=False)
+        print(f"Saved HSX data to: {filepath}")
+        return filepath
+    
+    def summary(self) -> Dict[str, any]:
+        """
+        Get a summary of the current state.
+        
+        Returns:
+            Dictionary with system info and statistics.
+        """
+        return {
+            'system': '-'.join(self.elements),
+            'n_components': self.n_components,
+            'binary_pairs': self.binary_pairs,
+            'grid_delta': self.grid_delta,
+            'param_format': self.param_format,
+            'interp_scheme': self.interp_scheme,
+            'fusion_data_loaded': self.fusion_data is not None,
+            'binary_params_set': self.binary_L_params is not None,
+            'n_liquid_points': len(self.liquid_hsx) if self.liquid_hsx is not None else 0,
+            'n_solid_phases': len(self.solid_hsx) if self.solid_hsx is not None else 0,
+            'total_hsx_points': len(self.hsx_data) if self.hsx_data is not None else 0,
+            **self.metadata
+        }
 
 
 if __name__ == "__main__":
-    # Example usage: build expressions for a quaternary system using the class-based API
+    # ===========================================================================
+    # Example: ThermoExprBuilder (low-level expression building)
+    # ===========================================================================
+    print("=" * 70)
+    print("EXAMPLE 1: ThermoExprBuilder (symbolic expression building)")
+    print("=" * 70)
+    
+    # Build expressions for a ternary system
+    builder = ThermoExprBuilder(
+        n_components=3,
+        param_format='combined',
+        interp_scheme='linear'
+    )
+    
+    # Load fusion data for demonstration
     with open(fusion_enthalpies_file) as f:
         fusion_enthalpies_data = json.load(f)
     with open(fusion_temps_file) as f:
         fusion_temps_data = json.load(f)
     
-    # Select specific elements for the quaternary system
-    elements = ['Al', 'Cu', 'Si', 'Mg']
-    fusion_H = [fusion_enthalpies_data[el] for el in elements]
-    fusion_T = [fusion_temps_data[el] for el in elements]
+    elements = ['Al', 'Cu', 'Mg']
+    fusion_H = [fusion_enthalpies_data[el] for el in sorted(elements)]
+    fusion_T = [fusion_temps_data[el] for el in sorted(elements)]
     
-    # Example binary parameters (these would come from fitting or literature)
-    binary_params = {
-        (0, 1): [1000, 0, 500, 0],  # L0_a, L0_b, L1_a, L1_b for pair (0,1)
-        (0, 2): [1500, 0, 700, 0],
-        (0, 3): [1300, 0, 650, 0],
-        (1, 2): [1200, 0, 600, 0],
-        (1, 3): [1100, 0, 550, 0],
-        (2, 3): [1400, 0, 700, 0],
-    }
+    builder.set_reference_gibbs_from_fusion(fusion_H, fusion_T)
+    builder.set_binary_L_params({
+        (0, 1): [-5000, 0, 1000, 0],  # Al-Cu
+        (0, 2): [-3000, 0, 500, 0],   # Al-Mg
+        (1, 2): [-2000, 0, 300, 0],   # Cu-Mg
+    })
+    builder.build()
     
-    # =========================================================================
-    # NEW CLASS-BASED API (recommended)
-    # =========================================================================
-    builder = ThermoExprBuilder(
-        n_components=4,
+    print(f"\nSystem: {'-'.join(sorted(elements))}")
+    print(f"Binary pairs: {builder.binary_pairs}")
+    print(f"Mole fractions: {builder.mole_fractions}")
+    print(f"\nExpressions built successfully!")
+    
+    # ===========================================================================
+    # Example: GeneralInterpolation (full HSX pipeline)
+    # ===========================================================================
+    print("\n" + "=" * 70)
+    print("EXAMPLE 2: GeneralInterpolation (full HSX data generation)")
+    print("=" * 70)
+    
+    # Initialize for a ternary system
+    output_dir = os.path.join(os.path.dirname(__file__), 'test_output')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    interp = GeneralInterpolation(
+        elements=['Al', 'Cu', 'Mg'],
+        output_dir=output_dir,
+        grid_delta=0.05,  # Coarser grid for quick demo
         param_format='combined',
         interp_scheme='linear'
     )
     
-    # Set inputs using class methods
-    builder.set_reference_gibbs_from_fusion(fusion_H, fusion_T)
-    builder.set_binary_L_params(binary_params)
+    # Set binary interaction parameters (example values)
+    interp.set_binary_params({
+        'Al-Cu': [-5000, 0, 1000, 0],
+        'Al-Mg': [-3000, 0, 500, 0],
+        'Cu-Mg': [-2000, 0, 300, 0],
+    })
     
-    # Build expressions (returns self for chaining)
-    builder.build()
+    # Run the full interpolation pipeline
+    interp.interpolate(use_mp_cache=True)
     
-    # Access expressions directly as attributes
-    print("=" * 60)
-    print("THERMODYNAMIC EXPRESSION BUILDER EXAMPLE")
-    print("=" * 60)
-    print(f"\nNumber of components: {builder.n_components}")
-    print(f"Binary pairs: {builder.binary_pairs}")
-    print(f"Independent mole fractions: {builder.x}")
-    print(f"All mole fractions: {builder.mole_fractions}")
-    print(f"\nG_liquid expression built successfully")
-    print(f"S_liquid expression built successfully")
-    print(f"H_liquid expression built successfully")
+    # Display summary
+    print("\n" + "-" * 40)
+    print("SUMMARY")
+    print("-" * 40)
+    summary = interp.summary()
+    for key, value in summary.items():
+        print(f"  {key}: {value}")
     
-    print("\nG_liquid expression:")
-    print(builder.g_liquid)
-    print("\nS_liquid expression:")
-    print(builder.s_liquid)
-    print("\nH_liquid expression:")
-    print(builder.h_liquid)
-
-    # Example: lambdify and evaluate
-    g_func = builder.lambdify('g_liquid')
+    # Show a sample of the HSX data
+    print("\n" + "-" * 40)
+    print("HSX Data Sample (first 10 rows)")
+    print("-" * 40)
+    print(interp.hsx_data.head(10).to_string())
