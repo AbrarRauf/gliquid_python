@@ -332,10 +332,10 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
         liq_h_vals = self.eqs["h_liq_lambdified"](*lambda_args_vals).flatten().tolist()
         liq_s_vals = self.eqs["s_liq_lambdified"](*lambda_args_vals).flatten().tolist()
 
-        lhs_h = self.component_data[self.components[0]]['H_liq']
-        rhs_h = self.component_data[self.components[1]]['H_liq']
-        lhs_s = self.component_data[self.components[0]]['S_liq'] if lhs_h != 0 else 0.0
-        rhs_s = self.component_data[self.components[1]]['S_liq'] if rhs_h != 0 else 0.0
+        lhs_h = float(self.component_data[self.components[0]][0])
+        rhs_h = float(self.component_data[self.components[1]][0])
+        lhs_s = 0.0 if lhs_h == 0.0 else lhs_h / float(self.component_data[self.components[0]][1])
+        rhs_s = 0.0 if rhs_h == 0.0 else rhs_h / float(self.component_data[self.components[1]][1])
 
         data = {
             "X": [float(x) for x in _x_vals],
@@ -723,8 +723,8 @@ def build_tx_with_solid_solution(
 
         ss_color = _phase_color(system, ss_name)
         ss_ref_endpoints = [
-            (0.0, float(system.component_data[system.components[0]]["T_fusion"]) - 273.15),
-            (100.0, float(system.component_data[system.components[1]]["T_fusion"]) - 273.15),
+            (0.0, float(system.component_data[system.components[0]][0]) - 273.15),
+            (100.0, float(system.component_data[system.components[1]][0]) - 273.15),
         ]
         fig.add_trace(
             go.Scatter(
@@ -839,7 +839,8 @@ def main():
     # elts = ["Zr", "Hf", "Nb", "W", "Al"]
     # system_combos = [sorted(elts[i], elts[j]) for i in range(len(elts)) for j in range(i + 1, len(elts))]
 
-    sys_name = "Nb-W"
+    # sys_name = "Nb-W"
+    sys_name = "Al-Zr"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
 
