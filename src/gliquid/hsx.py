@@ -101,8 +101,11 @@ class HSX:
         for simplex in self.simplices:
             A, B, C = self.points[simplex]
             n = np.cross(B - A, C - A).astype(float)
+            # Degenerate / near-vertical facets yield n[2] ~ 0 and non-physical infinite temperatures.
+            if np.isclose(n[2], 0.0, atol=1e-12):
+                continue
             T = (-n[1] / n[2]) * self.scaler
-            if not np.isnan(T):
+            if np.isfinite(T):
                 temps.append(T)
                 valid_simplices.append(simplex)
                 new_phases.append([self.df.loc[simplex[i], 'Phase'] for i in range(3)])

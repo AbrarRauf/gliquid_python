@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import sympy as sp
@@ -467,12 +468,30 @@ def auto_chg_temps_k(system: SolidSolutionBinaryLiquid) -> list[float]:
         if phase["name"] not in system.components + ["L"] and len(phase["points"]) > 0
     ]
 
+    def _finite_temps(points: list) -> list[float]:
+        vals: list[float] = []
+        for point in points:
+            if len(point) < 2:
+                continue
+            t_val = float(point[1])
+            if np.isfinite(t_val):
+                vals.append(t_val)
+        return vals
+
+    t_candidates: list[float] = []
     if solid_phases:
-        t_high = max(max(phase["points"], key=lambda point: point[1])[1] for phase in solid_phases)
-    elif system.phases[-1]["points"]:
-        t_high = max(system.phases[-1]["points"], key=lambda point: point[1])[1]
-    else:
-        t_high = max(component[1] for component in system.component_data.values() if component[1] > 0)
+        for phase in solid_phases:
+            t_candidates.extend(_finite_temps(phase["points"]))
+    if not t_candidates and system.phases[-1]["points"]:
+        t_candidates.extend(_finite_temps(system.phases[-1]["points"]))
+    if not t_candidates:
+        t_candidates.extend(
+            float(component[1])
+            for component in system.component_data.values()
+            if len(component) > 1 and np.isfinite(float(component[1])) and float(component[1]) > 0
+        )
+
+    t_high = max(t_candidates) if t_candidates else 2000.0
     return [0.0, float(t_high)]
 
 
@@ -494,7 +513,9 @@ def build_chg_with_solid_solution(
         stable_solution_labels = {"L", *system.ss_names}.intersection(stable_labels)
 
     traces: list[go.Scatter] = []
-    for temp_k in reversed(t_vals_k):
+    finite_t_vals = [float(t) for t in t_vals_k if np.isfinite(float(t))]
+    finite_t_vals = sorted(set(finite_t_vals))
+    for temp_k in reversed(finite_t_vals):
         g_liq_expr = system.eqs["g_liquid"].subs(
             {
                 t_sym: temp_k,
@@ -705,12 +726,62 @@ def build_tx_with_solid_solution(
         system.update_phase_points()
 
     df_tx, final_phases, simplices, temps_k = system.hsx.compute_tx()
+    if len(df_tx) == 0:
+        raise RuntimeError("HSX compute_tx produced no points for line rendering.")
+
     temps_c = temps_k - 273.15
     df = df_tx.copy()
     df["x_at"] = df["x"].astype(float) * 100.0
     df["t_c"] = df["t"].astype(float) - 273.15
 
-    all_t_candidates = [float(np.min(temps_c)), float(np.max(temps_c))]
+    def _reduce_simplex_vertices(comps: list[float], phases: list[str]) -> tuple[list[float], list[str]]:
+        """Reduce duplicate phase vertices in a simplex to one representative point per phase.
+
+        For duplicate phase vertices (A, A, B), keep the A-point closest in composition
+        to the non-A vertex. This mirrors the original plot_tx duplicate-pruning behavior
+        and generalizes it to SS phases.
+        """
+        order = np.argsort(np.asarray(comps, dtype=float))
+        comps_sorted = [float(np.asarray(comps, dtype=float)[i]) for i in order]
+        phases_sorted = [str(np.asarray(phases, dtype=object)[i]) for i in order]
+
+        unique_in_order: list[str] = []
+        for p in phases_sorted:
+            if p not in unique_in_order:
+                unique_in_order.append(p)
+
+        reduced: list[tuple[float, str]] = []
+        for phase in unique_in_order:
+            idxs = [i for i, p in enumerate(phases_sorted) if p == phase]
+            if len(idxs) == 1:
+                keep_idx = idxs[0]
+            elif len(idxs) == 2:
+                other = [i for i in range(len(comps_sorted)) if i not in idxs]
+                if other:
+                    other_comp = float(np.mean([comps_sorted[i] for i in other]))
+                    keep_idx = min(idxs, key=lambda i: abs(comps_sorted[i] - other_comp))
+                else:
+                    keep_idx = idxs[0]
+            else:
+                keep_idx = idxs[len(idxs) // 2]
+            reduced.append((comps_sorted[keep_idx], phase))
+
+        reduced.sort(key=lambda item: item[0])
+        return [x for x, _ in reduced], [p for _, p in reduced]
+
+    # Build simplex-level reduced TX points similar to original plot_tx combined_list/new_tx flow.
+    reduced_rows: list[list[float | str]] = []
+    for i, simplex in enumerate(simplices):
+        comps = [float(system.hsx.points[v][0]) for v in simplex]
+        phases = [str(final_phases[i][j]) for j in range(len(simplex))]
+        x_red, p_red = _reduce_simplex_vertices(comps, phases)
+        t_c = float(temps_c[i])
+        for x_val, phase in zip(x_red, p_red):
+            reduced_rows.append([x_val * 100.0, t_c, phase, _phase_color(system, phase)])
+
+    reduced_df = pd.DataFrame(reduced_rows, columns=["x", "t", "label", "color"])
+
+    all_t_candidates = [float(np.min(df["t_c"])), float(np.max(df["t_c"]))]
     if system.digitized_liq:
         liq_t = [float(point[1] - 273.15) for point in system.digitized_liq]
         all_t_candidates.extend([min(liq_t), max(liq_t)])
@@ -722,70 +793,45 @@ def build_tx_with_solid_solution(
 
     fig = go.Figure()
 
-    if show_tie_lines and len(simplices) > 0:
-        seen: set[tuple[float, float, float]] = set()
-        stride = max(1, int(tie_line_stride))
-        for idx, simplex in enumerate(simplices):
-            if idx % stride != 0:
-                continue
-            x_vals = system.hsx.points[simplex, 0].astype(float) * 100.0
-            x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
-            if x_max - x_min < 0.25:
-                continue
-            t_c = float(temps_c[idx])
-            key = (round(t_c, 3), round(x_min, 3), round(x_max, 3))
-            if key in seen:
-                continue
-            seen.add(key)
-            includes_liquid = any(label == "L" for label in final_phases[idx])
+    # Liquidus selection mirrors original plot_tx logic: one liquid point per composition.
+    liq_df = (
+        df[df["label"] == "L"][["x_at", "t_c"]]
+        .sort_values(["x_at", "t_c"])
+        .drop_duplicates(subset="x_at", keep="first")
+    )
+    if not liq_df.empty:
+        liq_x = liq_df["x_at"].to_numpy(dtype=float)
+        liq_t = liq_df["t_c"].to_numpy(dtype=float)
+        for seg_x, seg_y in _split_segments(liq_x, liq_t):
             fig.add_trace(
                 go.Scatter(
-                    x=[x_min, x_max],
-                    y=[t_c, t_c],
+                    x=seg_x,
+                    y=seg_y,
                     mode="lines",
-                    line={
-                        "color": "rgba(120,120,120,0.30)" if includes_liquid else "rgba(170,170,170,0.22)",
-                        "width": 1.0 if includes_liquid else 0.8,
-                    },
-                    hoverinfo="skip",
+                    line={"color": _phase_color(system, "L"), "width": 2.8},
+                    name="L",
                     showlegend=False,
                 )
             )
 
-    labels = [str(label) for label in sorted(df["label"].unique().tolist())]
-    if "L" in labels:
-        labels = [label for label in labels if label != "L"] + ["L"]
-
-    for label in labels:
-        phase_df = df[df["label"] == label]
+    phase_order = [p for p in system.hsx.phases if p != "L"]
+    for phase in phase_order:
+        phase_df = reduced_df[reduced_df["label"] == phase]
         if phase_df.empty:
             continue
 
-        x_vals = phase_df["x_at"].to_numpy(dtype=float)
-        t_vals = phase_df["t_c"].to_numpy(dtype=float)
+        color = _phase_color(system, phase)
+        name = _phase_display_name(system, phase)
 
-        # Build composition-wise envelopes (min/max T) and keep disconnected ranges separate.
-        envelope: dict[float, list[float]] = {}
-        for x_val, t_val in zip(x_vals, t_vals):
-            x_key = round(float(x_val), 6)
-            if x_key not in envelope:
-                envelope[x_key] = [float(t_val), float(t_val)]
-            else:
-                envelope[x_key][0] = min(envelope[x_key][0], float(t_val))
-                envelope[x_key][1] = max(envelope[x_key][1], float(t_val))
+        x_unique = np.array(sorted(phase_df["x"].unique()), dtype=float)
+        t_min = np.array([phase_df.loc[phase_df["x"] == x, "t"].min() for x in x_unique], dtype=float)
+        t_max = np.array([phase_df.loc[phase_df["x"] == x, "t"].max() for x in x_unique], dtype=float)
 
-        xs = np.array(sorted(envelope.keys()), dtype=float)
-        t_min = np.array([envelope[x][0] for x in xs], dtype=float)
-        t_max = np.array([envelope[x][1] for x in xs], dtype=float)
-
-        color = _phase_color(system, label)
-        name = _phase_display_name(system, label)
-
-        if xs.size == 1:
-            x0 = float(xs[0])
-            y0 = float(np.min(t_vals))
-            y1 = float(np.max(t_vals))
-            if label in system.components and (x0 < 0.5 or x0 > 99.5):
+        if x_unique.size == 1:
+            x0 = float(x_unique[0])
+            y0 = float(t_min[0])
+            y1 = float(t_max[0])
+            if phase in system.components and (x0 < 0.5 or x0 > 99.5):
                 y0 = y_lo
             fig.add_trace(
                 go.Scatter(
@@ -794,63 +840,40 @@ def build_tx_with_solid_solution(
                     mode="lines",
                     line={"color": color, "width": 2.4},
                     name=name,
-                    showlegend=(label != "L"),
+                    showlegend=True,
                 )
             )
             continue
 
-        # Keep both envelopes so the line plot reflects the same coexistence information
-        # visible in the raw TX scatter (instead of collapsing to only one boundary).
-        upper_segments = _split_segments(xs, t_max)
-        lower_segments = _split_segments(xs, t_min)
-
-        # Primary boundary: upper envelope (restores solid lines that disappear with min-only plotting).
-        show_legend = label != "L"
-        for seg_x, seg_y in upper_segments:
+        show_legend = True
+        for seg_x, seg_y in _split_segments(x_unique, t_max):
             fig.add_trace(
                 go.Scatter(
                     x=seg_x,
                     y=seg_y,
                     mode="lines",
-                    line={"color": color, "width": 2.8 if label == "L" else 2.4},
+                    line={"color": color, "width": 2.4},
                     name=name,
                     showlegend=show_legend,
                 )
             )
             show_legend = False
 
+        # Draw secondary branch where the phase occupies a temperature interval at fixed composition.
         spread = t_max - t_min
         if np.any(spread > 1e-6):
-            # Secondary boundary: lower envelope as dashed line.
-            for seg_x, seg_y in lower_segments:
+            for seg_x, seg_y in _split_segments(x_unique, t_min):
                 fig.add_trace(
                     go.Scatter(
                         x=seg_x,
                         y=seg_y,
                         mode="lines",
-                        line={"color": color, "width": 1.5, "dash": "dot"},
-                        opacity=0.75,
-                        name=f"{name} (lower)",
+                        line={"color": color, "width": 1.2, "dash": "dot"},
+                        opacity=0.8,
                         showlegend=False,
+                        hoverinfo="skip",
                     )
                 )
-
-            # Sparse connectors where the phase spans a vertical temperature interval at fixed composition.
-            connector_idx = np.where(spread > 10.0)[0]
-            if connector_idx.size > 0:
-                stride = max(1, connector_idx.size // 20)
-                for idx in connector_idx[::stride]:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[float(xs[idx]), float(xs[idx])],
-                            y=[float(t_min[idx]), float(t_max[idx])],
-                            mode="lines",
-                            line={"color": color, "width": 1.0},
-                            opacity=0.25,
-                            hoverinfo="skip",
-                            showlegend=False,
-                        )
-                    )
 
     if system.digitized_liq:
         fig.add_trace(
