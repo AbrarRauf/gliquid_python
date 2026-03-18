@@ -719,7 +719,7 @@ def build_tx_scatter_with_solid_solution(
 
 def build_tx_with_solid_solution(
     system: SolidSolutionBinaryLiquid,
-    show_tie_lines: bool = False,
+    show_tie_lines: bool = True,
     tie_line_stride: int = 1,
 ) -> go.Figure:
     if not system.phases[-1]["points"]:
@@ -944,6 +944,31 @@ def build_tx_with_solid_solution(
                 name="Assessed Liquidus",
             )
         )
+
+    # Draw only three-phase liquidus invariant tie-lines (original plot_tx style).
+    if show_tie_lines:
+        try:
+            inv_points, _, _ = system.hsx.liquidus_invariants()
+        except Exception:
+            inv_points = {}
+
+        for inv_type in ("Eutectics", "Peritectics", "Misc Gaps"):
+            for temp_c, _, comps, phases in inv_points.get(inv_type, []):
+                if len(comps) != 3:
+                    continue
+                if "L" not in [str(p) for p in phases]:
+                    continue
+                comps_pct = [float(x) * 100.0 for x in comps]
+                fig.add_trace(
+                    go.Scatter(
+                        x=comps_pct,
+                        y=[float(temp_c)] * 3,
+                        mode="lines",
+                        line={"color": "Silver", "width": 1.2},
+                        showlegend=False,
+                        hovertemplate=f"{inv_type[:-1]} invariant<br>T: %{{y:.1f}} C<extra></extra>",
+                    )
+                )
 
     for ss_name in system.ss_names:
         ss_phase = next((phase for phase in system.phases if phase["name"] == ss_name), None)
