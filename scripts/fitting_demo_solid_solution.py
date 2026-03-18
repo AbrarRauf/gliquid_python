@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
 import sympy as sp
 
@@ -57,6 +58,13 @@ SS_SGS = {
 }
 DEFAULT_REF_MODE = "omegas-legacy"  # Options: "local-cache", "omegas-legacy"
 DEFAULT_OMEGAS_PATH = cfg.data_dir / "omegas.json"
+
+# Fixed colors for solution phases; these are reserved and never reused for hull phases.
+SS_FIXED_COLORS = {
+    "BCC": "#d7263d",
+    "FCC": "#1b9aaa",
+    "HCP": "#f4a259",
+}
 
 def _safe_spacegroup(structure) -> tuple[int | None, str | None]:
     try:
@@ -213,6 +221,7 @@ def load_solid_solution_models(
             )
         return models
 
+    #NOTE: What does the comment below mean? FOLLOW UP ON THIS.
     if ref_mode == "local-cache": # Need to update to allow for multiple SS phases
 
         ss_models = get_ss_model_refs_from_local_entries(components, dft_ch)
@@ -560,25 +569,136 @@ def _split_segments(x_vals: np.ndarray, y_vals: np.ndarray) -> list[tuple[np.nda
 
 def _phase_display_name(system: SolidSolutionBinaryLiquid, phase_label: str) -> str:
     if phase_label in system.ss_names:
-        return f"({system.components[0]}, {system.components[1]})"
+        return f"{phase_label} ({system.components[0]}, {system.components[1]})"
     return phase_label
 
 
+def _phase_color_map(system: SolidSolutionBinaryLiquid) -> dict[str, str]:
+    cached = getattr(system, "_ss_phase_color_map", None)
+    if cached is not None:
+        return cached
+
+    reserved = set(SS_FIXED_COLORS.values())
+    reserved.add("cornflowerblue")
+    base_palette = [c for c in px.colors.qualitative.Pastel if c not in reserved]
+    if not base_palette:
+        base_palette = px.colors.qualitative.Pastel
+
+    phase_map: dict[str, str] = {"L": "cornflowerblue"}
+
+    # Mirror original HSX behavior: line-compound phases are color-coded from a palette.
+    line_phases = [
+        p for p in system.hsx.phases
+        if p != "L" and p not in system.ss_names
+    ]
+    for idx, phase in enumerate(line_phases):
+        phase_map[phase] = base_palette[idx % len(base_palette)]
+
+    # Add deterministic, unique colors for solid-solution phases.
+    fallback_ss_palette = ["#6c5ce7", "#00a896", "#ef476f", "#ffd166"]
+    used_colors = set(phase_map.values())
+    fallback_idx = 0
+    for ss_name in system.ss_names:
+        fixed = SS_FIXED_COLORS.get(ss_name)
+        if fixed is not None and fixed not in used_colors:
+            phase_map[ss_name] = fixed
+            used_colors.add(fixed)
+            continue
+        while fallback_idx < len(fallback_ss_palette) and fallback_ss_palette[fallback_idx] in used_colors:
+            fallback_idx += 1
+        if fallback_idx < len(fallback_ss_palette):
+            phase_map[ss_name] = fallback_ss_palette[fallback_idx]
+            used_colors.add(fallback_ss_palette[fallback_idx])
+            fallback_idx += 1
+        else:
+            phase_map[ss_name] = "#3a86ff"
+
+    system._ss_phase_color_map = phase_map
+    return phase_map
+
+
 def _phase_color(system: SolidSolutionBinaryLiquid, phase_label: str) -> str:
-    if phase_label == "L":
-        return "cornflowerblue"
-    if phase_label in system.ss_names:
-        ss_palette = ["#2f9e44", "#0b7285", "#e67700", "#5f3dc4"]
-        idx = system.ss_names.index(phase_label) % len(ss_palette)
-        return ss_palette[idx]
-    if phase_label in system.components:
-        return "#222222"
-    return "#555555"
+    return _phase_color_map(system).get(phase_label, "#555555")
+
+
+def build_tx_scatter_with_solid_solution(
+    system: SolidSolutionBinaryLiquid,
+    include_digitized_liquidus: bool = True,
+) -> go.Figure:
+    """Diagnostic TX scatter using raw points from HSX compute_tx (no envelope post-processing)."""
+    if not system.phases[-1]["points"]:
+        system.update_phase_points()
+
+    df_tx, _, _, _ = system.hsx.compute_tx()
+    df = df_tx.copy()
+    df["x_at"] = df["x"].astype(float) * 100.0
+    df["t_c"] = df["t"].astype(float) - 273.15
+    df["label_display"] = [
+        _phase_display_name(system, str(label)) for label in df["label"]
+    ]
+
+    color_map = {
+        _phase_display_name(system, phase): _phase_color(system, phase)
+        for phase in system.hsx.phases
+    }
+
+    fig = px.scatter(
+        df,
+        x="x_at",
+        y="t_c",
+        color="label_display",
+        color_discrete_map=color_map,
+        title=f"{system.sys_name} TX Scatter (Raw HSX compute_tx Points)",
+        width=920,
+        height=700,
+    )
+
+    fig.update_traces(marker={"size": 7, "opacity": 0.85})
+
+    if include_digitized_liquidus and system.digitized_liq:
+        fig.add_trace(
+            go.Scatter(
+                x=[float(point[0] * 100.0) for point in system.digitized_liq],
+                y=[float(point[1] - 273.15) for point in system.digitized_liq],
+                mode="lines",
+                line={"color": "#b82e2e", "width": 2.0, "dash": "dash"},
+                name="Assessed Liquidus",
+            )
+        )
+
+    y_lo = float(system.temp_range[0] - 273.15)
+    y_hi = float(system.temp_range[-1] - 273.15) + 100.0
+    fig.update_layout(
+        xaxis={"range": [0, 100], "title": f"X_{system.components[1]} (at. %)"},
+        yaxis={"range": [y_lo, y_hi], "title": "T [C]"},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=True,
+        font={"size": 18},
+    )
+    fig.update_xaxes(
+        mirror=True,
+        ticks="inside",
+        showline=True,
+        linecolor="gray",
+        linewidth=2,
+        tickcolor="gray",
+    )
+    fig.update_yaxes(
+        mirror=True,
+        ticks="inside",
+        showline=True,
+        linecolor="gray",
+        linewidth=2,
+        tickcolor="gray",
+    )
+
+    return fig
 
 
 def build_tx_with_solid_solution(
     system: SolidSolutionBinaryLiquid,
-    show_tie_lines: bool = True,
+    show_tie_lines: bool = False,
     tie_line_stride: int = 1,
 ) -> go.Figure:
     if not system.phases[-1]["points"]:
@@ -679,9 +799,14 @@ def build_tx_with_solid_solution(
             )
             continue
 
+        # Keep both envelopes so the line plot reflects the same coexistence information
+        # visible in the raw TX scatter (instead of collapsing to only one boundary).
+        upper_segments = _split_segments(xs, t_max)
         lower_segments = _split_segments(xs, t_min)
+
+        # Primary boundary: upper envelope (restores solid lines that disappear with min-only plotting).
         show_legend = label != "L"
-        for seg_x, seg_y in lower_segments:
+        for seg_x, seg_y in upper_segments:
             fig.add_trace(
                 go.Scatter(
                     x=seg_x,
@@ -693,6 +818,39 @@ def build_tx_with_solid_solution(
                 )
             )
             show_legend = False
+
+        spread = t_max - t_min
+        if np.any(spread > 1e-6):
+            # Secondary boundary: lower envelope as dashed line.
+            for seg_x, seg_y in lower_segments:
+                fig.add_trace(
+                    go.Scatter(
+                        x=seg_x,
+                        y=seg_y,
+                        mode="lines",
+                        line={"color": color, "width": 1.5, "dash": "dot"},
+                        opacity=0.75,
+                        name=f"{name} (lower)",
+                        showlegend=False,
+                    )
+                )
+
+            # Sparse connectors where the phase spans a vertical temperature interval at fixed composition.
+            connector_idx = np.where(spread > 10.0)[0]
+            if connector_idx.size > 0:
+                stride = max(1, connector_idx.size // 20)
+                for idx in connector_idx[::stride]:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[float(xs[idx]), float(xs[idx])],
+                            y=[float(t_min[idx]), float(t_max[idx])],
+                            mode="lines",
+                            line={"color": color, "width": 1.0},
+                            opacity=0.25,
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
 
     if system.digitized_liq:
         fig.add_trace(
@@ -715,7 +873,7 @@ def build_tx_with_solid_solution(
             fig.add_annotation(
                 x=float(ss_x[mid_idx]),
                 y=float(ss_t[mid_idx] - 0.08 * (y_hi - y_lo)),
-                text=ss_name,
+                text=_phase_display_name(system, ss_name),
                 showarrow=False,
                 font={"size": 14, "color": "black"},
                 textangle=-90,
@@ -806,6 +964,136 @@ def build_tx_with_solid_solution(
     return fig
 
 
+def plot_hsx_with_solid_solution_blocks(
+    system: SolidSolutionBinaryLiquid,
+    show_hull_simplices: bool = True,
+    simplex_color: str = "cyan",
+    simplex_opacity: float = 0.28,
+    ss_block_opacity: float = 0.30,
+) -> go.Figure:
+    """HSX diagnostic plot with solid-solution phases rendered as phase-level blocks.
+
+    This mirrors the original HSX plot style (scatter + lower-hull simplices) and adds
+    one mesh block per solid-solution phase so each continuous solution is visually grouped.
+    """
+    if not system.phases[-1]["points"]:
+        system.update_phase_points()
+
+    hsx_obj = system.hsx
+    simplices = hsx_obj.hull()
+    df = hsx_obj.df
+    points = hsx_obj.points
+    ss_set = set(system.ss_names)
+    scatter_colors = [_phase_color(system, str(phase)) for phase in df["Phase"]]
+
+    fig = go.Figure()
+
+    # Base scatter for all HSX points.
+    fig.add_trace(
+        go.Scatter3d(
+            x=df["X [Fraction]"],
+            y=df["S [J/mol/K]"],
+            z=df["H [J/mol]"],
+            mode="markers",
+            marker={"size": 4, "opacity": 0.55, "color": scatter_colors},
+            name="HSX points",
+            showlegend=False,
+            hovertemplate=(
+                "Phase: %{customdata}<br>"
+                "X: %{x:.4f}<br>"
+                "S: %{y:.4f}<br>"
+                "H: %{z:.4f}<extra></extra>"
+            ),
+            customdata=df["Phase"],
+        )
+    )
+
+    # Overlay lower-hull simplices used for TX construction.
+    if show_hull_simplices:
+        for simplex in simplices:
+            x_coords = points[simplex, 0]
+            y_coords = points[simplex, 1]
+            z_coords = points[simplex, 2]
+            fig.add_trace(
+                go.Mesh3d(
+                    x=x_coords,
+                    y=y_coords,
+                    z=z_coords,
+                    i=np.array([0]),
+                    j=np.array([1]),
+                    k=np.array([2]),
+                    opacity=float(simplex_opacity),
+                    color=simplex_color,
+                    name="Hull simplex",
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+    # Render each SS phase as a single colored mesh block.
+    for ss_name in system.ss_names:
+        ss_df = df[df["Phase"] == ss_name]
+        if ss_df.empty:
+            continue
+
+        ss_color = _phase_color(system, ss_name)
+        ss_x = ss_df["X [Fraction]"].to_numpy(dtype=float)
+        ss_y = ss_df["S [J/mol/K]"].to_numpy(dtype=float)
+        ss_z = ss_df["H [J/mol]"].to_numpy(dtype=float)
+
+        fig.add_trace(
+            go.Mesh3d(
+                x=ss_x,
+                y=ss_y,
+                z=ss_z,
+                alphahull=5,
+                opacity=float(ss_block_opacity),
+                color=ss_color,
+                name=f"{ss_name} block",
+                hovertemplate=(
+                    f"{ss_name} block<br>"
+                    "X: %{x:.4f}<br>"
+                    "S: %{y:.4f}<br>"
+                    "H: %{z:.4f}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+
+    # Create clean legend entries for all non-liquid phases and liquid.
+    legend_labels = [p for p in hsx_obj.phases if p != "L"] + ["L"]
+    for label in legend_labels:
+        color = _phase_color(system, label)
+        legend_name = _phase_display_name(system, label)
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                marker={"size": 8, "color": color},
+                name=legend_name,
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
+    fig.update_layout(
+        title=f"<b>{system.sys_name} HSX Convex Hull Debug (Solid-Solution Blocks)</b>",
+        scene={
+            "xaxis_title": "X",
+            "yaxis_title": "S [scaled J/mol/K]",
+            "zaxis_title": "H [scaled J/mol]",
+        },
+        legend={"itemsizing": "constant", "yanchor": "top", "y": 0.98, "xanchor": "left", "x": 0.02},
+        font={"size": 14},
+        width=980,
+        height=760,
+    )
+
+    return fig
+
+
 def build_fit_summary(system: SolidSolutionBinaryLiquid, best_fit: dict) -> dict:
     return {
         "system": system.sys_name,
@@ -841,6 +1129,7 @@ def main():
 
     # sys_name = "Nb-W"
     sys_name = "Al-Zr"
+    # sys_name = "W-Zr"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
 
@@ -895,6 +1184,12 @@ def main():
     # fit_fig.write_html(str(fit_path), include_plotlyjs="cdn")
     # print(f"Saved plot: {fit_path}")
     fit_fig.show()
+
+    tx_scatter_fig = build_tx_scatter_with_solid_solution(system)
+    tx_scatter_fig.show()
+
+    hsx_debug_fig = plot_hsx_with_solid_solution_blocks(system)
+    hsx_debug_fig.show()
 
     t_vals_k = auto_chg_temps_k(system)
     chg_fig = build_chg_with_solid_solution(system, t_vals_k=t_vals_k)

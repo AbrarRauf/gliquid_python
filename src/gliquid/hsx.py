@@ -86,9 +86,11 @@ class HSX:
         real_simplices = all_simplices[mask_no_fict]
 
         # Filter 2: discard simplices where all 3 vertices are intermetallic (non-liquid) points
-        is_inter = (self.df['Phase'] != 'L').values
-        inter_counts = np.sum(is_inter[real_simplices], axis=1)
-        self.simplices = real_simplices[inter_counts < 3]
+        # is_inter = (self.df['Phase'] != 'L').values
+        # inter_counts = np.sum(is_inter[real_simplices], axis=1)
+        # self.simplices = real_simplices[inter_counts < 3]
+        
+        self.simplices = real_simplices
 
         return self.simplices
 
