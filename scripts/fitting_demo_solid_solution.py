@@ -790,6 +790,7 @@ def build_tx_with_solid_solution(
     y_pad = max(40.0, 0.04 * (y_hi - y_lo))
     y_lo -= y_pad
     y_hi += y_pad
+    y_floor = max(-273.15, y_lo)
 
     fig = go.Figure()
 
@@ -827,12 +828,69 @@ def build_tx_with_solid_solution(
         t_min = np.array([phase_df.loc[phase_df["x"] == x, "t"].min() for x in x_unique], dtype=float)
         t_max = np.array([phase_df.loc[phase_df["x"] == x, "t"].max() for x in x_unique], dtype=float)
 
+        x_upper_plot = x_unique.copy()
+        t_upper_plot = t_max.copy()
+        x_lower_plot = x_unique.copy()
+        t_lower_plot = t_min.copy()
+
+        # For SS phases, extend upper/lower branches to a single extrapolated junction
+        # (instead of adding vertical endpoint connectors that create a closed polygon).
+        spread = t_max - t_min
+        if phase in system.ss_names and x_unique.size >= 3 and np.any(spread > 1e-6):
+            side = "left" if spread[0] <= spread[-1] else "right"
+
+            def _side_line(xv: np.ndarray, yv: np.ndarray, which: str) -> tuple[float, float] | None:
+                if which == "left":
+                    x1, y1 = float(xv[0]), float(yv[0])
+                    x2, y2 = float(xv[1]), float(yv[1])
+                else:
+                    x1, y1 = float(xv[-2]), float(yv[-2])
+                    x2, y2 = float(xv[-1]), float(yv[-1])
+                dx = x2 - x1
+                if np.isclose(dx, 0.0, atol=1e-12):
+                    return None
+                m = (y2 - y1) / dx
+                b = y1 - m * x1
+                return m, b
+
+            up_line = _side_line(x_upper_plot, t_upper_plot, side)
+            lo_line = _side_line(x_lower_plot, t_lower_plot, side)
+            if up_line is not None and lo_line is not None:
+                m_up, b_up = up_line
+                m_lo, b_lo = lo_line
+                if not np.isclose(m_up, m_lo, atol=1e-12):
+                    x_int = (b_lo - b_up) / (m_up - m_lo)
+                    t_int = m_up * x_int + b_up
+
+                    ext_ok = (
+                        np.isfinite(x_int)
+                        and np.isfinite(t_int)
+                        and (x_int < x_unique[0] if side == "left" else x_int > x_unique[-1])
+                        and (abs(x_int - (x_unique[0] if side == "left" else x_unique[-1])) <= 20.0)
+                        and (y_floor - 300.0 <= t_int <= y_hi + 300.0)
+                    )
+
+                    if ext_ok:
+                        if side == "left":
+                            x_upper_plot = np.insert(x_upper_plot, 0, x_int)
+                            t_upper_plot = np.insert(t_upper_plot, 0, t_int)
+                            x_lower_plot = np.insert(x_lower_plot, 0, x_int)
+                            t_lower_plot = np.insert(t_lower_plot, 0, t_int)
+                        else:
+                            x_upper_plot = np.append(x_upper_plot, x_int)
+                            t_upper_plot = np.append(t_upper_plot, t_int)
+                            x_lower_plot = np.append(x_lower_plot, x_int)
+                            t_lower_plot = np.append(t_lower_plot, t_int)
+
         if x_unique.size == 1:
             x0 = float(x_unique[0])
             y0 = float(t_min[0])
             y1 = float(t_max[0])
             if phase in system.components and (x0 < 0.5 or x0 > 99.5):
                 y0 = y_lo
+            elif phase not in system.ss_names and phase not in system.components:
+                # Match original plot_tx behavior: extend line compounds to low temperature.
+                y0 = y_floor
             fig.add_trace(
                 go.Scatter(
                     x=[x0, x0],
@@ -846,7 +904,7 @@ def build_tx_with_solid_solution(
             continue
 
         show_legend = True
-        for seg_x, seg_y in _split_segments(x_unique, t_max):
+        for seg_x, seg_y in _split_segments(x_upper_plot, t_upper_plot):
             fig.add_trace(
                 go.Scatter(
                     x=seg_x,
@@ -860,9 +918,10 @@ def build_tx_with_solid_solution(
             show_legend = False
 
         # Draw secondary branch where the phase occupies a temperature interval at fixed composition.
-        spread = t_max - t_min
+        spread = t_upper_plot - t_lower_plot
         if np.any(spread > 1e-6):
-            for seg_x, seg_y in _split_segments(x_unique, t_min):
+            lower_segments = _split_segments(x_lower_plot, t_lower_plot)
+            for seg_x, seg_y in lower_segments:
                 fig.add_trace(
                     go.Scatter(
                         x=seg_x,
