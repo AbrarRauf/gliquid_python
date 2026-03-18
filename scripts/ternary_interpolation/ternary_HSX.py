@@ -21,7 +21,7 @@ from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay
 from copy import deepcopy
-# from auth import key as MAPI_KEY
+from auth import key as MAPI_KEY
 
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
 from gliquid.binary import (
@@ -32,8 +32,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this 
 from extensive_hull_main import gliq_lowerhull3
 import random
 
-# mpr = MPRester(MAPI_KEY)
-mpr = MPRester("Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ")  # Use environment variable for MP_API_KEY
+mpr = MPRester(MAPI_KEY)
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
