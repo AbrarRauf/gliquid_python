@@ -10,6 +10,7 @@ import sympy as sp
 import gliquid.config as cfg
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 print(f"Setting workspace root to: {WORKSPACE_ROOT}")
 
 cfg.set_project_root(WORKSPACE_ROOT)
