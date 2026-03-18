@@ -15,29 +15,26 @@ import numpy as np
 
 from emmet.core.thermo import ThermoType
 from mp_api.client import MPRester as MPRester
-from mpds_client import MPDSDataRetrieval, MPDSDataTypes, APIError
+try:
+    from mpds_client import MPDSDataRetrieval, MPDSDataTypes, APIError
+except ImportError:
+    MPDSDataRetrieval = None
+    MPDSDataTypes = None
+    APIError = Exception
 from pymatgen.core import Composition, Element, Structure
 from pymatgen.entries.computed_entries import ComputedEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
 from pymatgen.entries.mixing_scheme import MaterialsProjectDFTMixingScheme
-import shutil
 import gliquid.config as config
 
 melt_enthalpies = json.load(open(config.fusion_enthalpies_file)) if os.path.exists(config.fusion_enthalpies_file) else {}
 melt_temps = json.load(open(config.fusion_temps_file)) if os.path.exists(config.fusion_temps_file) else {}
-boiling_temps = json.load(open(config.vaporization_temps_file)) if os.path.exists(config.vaporization_temps_file) else {}
-
-
-print(config.dir_structure)
-exit()
 
 missing_files = []
 if not melt_enthalpies:
     missing_files.append("fusion_enthalpies.json")
 if not melt_temps:
     missing_files.append("fusion_temperatures.json")
-if not boiling_temps:
-    missing_files.append("vaporization_temperatures.json")
 if missing_files:
     # Get the last two directories in the data_dir path
     data_dir_parts = os.path.normpath(config.data_dir).split(os.sep)
@@ -46,6 +43,14 @@ if missing_files:
         f"The following data files were not loaded correctly: {', '.join(missing_files)}. "
         f"Please ensure the files exist in the data directory '...{os.sep}{last_two_dirs}'."
     )
+
+
+def _require_mpds_client() -> None:
+    if MPDSDataRetrieval is None or MPDSDataTypes is None:
+        raise ImportError(
+            "mpds-client is required for live MPDS retrieval. "
+            "Install it with `pip install gliquid[mpds]` or `pip install mpds-client`."
+        )
 
 def validate_and_format_binary_system(input) -> tuple[list[str], str, bool]:
     """
@@ -88,7 +93,6 @@ def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool
     if mpds_json.get('reference') is None:
         print("No data in MPDS JSON.")
         return None, False
-
     data = next((b['svgpath'] for b in mpds_json['shapes'] if b.get('label') == 'L'), "")
     if not data:
         print("No liquidus data found.")
@@ -167,7 +171,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool
         filled_T = np.linspace(p1[1], p2[1], num_points)
         return [[x, t] for x, t in zip(filled_X, filled_T)][1:-1]
 
-    # Fill in ranges with missing points
+    # Fill in composition ranges with missing liquidus points
     for i in reversed(range(len(mpds_liquidus) - 1)):
         if mpds_liquidus[i + 1][0] - mpds_liquidus[i][0] > 0.06:
             filler = fill_liquidus(mpds_liquidus[i], mpds_liquidus[i + 1], 0.03)
@@ -185,7 +189,7 @@ def extract_digitized_liquidus(mpds_json: dict) -> tuple[list[list] | None, bool
     return mpds_liquidus, is_partial
 
 
-def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, list[list] | None]:
+def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, tuple[list[list] | None, bool]]:
     """Retrieves MPDS data for a binary system.
     
     Args:
@@ -193,17 +197,17 @@ def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, list[list] | None]:
         verbose (bool): If True, outputs additional debugging information.
 
     Returns:
-        tuple[dict, dict, list[list]]: A tuple containing the system MPDS JSON, component thermodynamic data, and
-        digitized liquidus curve that is properly formatted for fitting purposes. Note that the MPDS json in the
-        specified cache directory must follow the alphabetized, hyphenated naming convention (e.g. 'A-B.json')
+        tuple[dict, dict, tuple[list[list], bool]]: A tuple containing the system MPDS JSON, component thermodynamic 
+        data, and digitized liquidus curve that is properly formatted for fitting purposes. Note that the MPDS json in 
+        the specified cache directory must follow the alphabetized, hyphenated naming convention (e.g. 'A-B.json')
     """
     components, sys_name, _ = validate_and_format_binary_system(input) # TODO: determine if data should be flipped
     component_data = {
-        comp: [melt_enthalpies.get(comp, 0), melt_temps.get(comp, 0), boiling_temps.get(comp, 0)]
+        comp: [melt_enthalpies.get(comp, 0), melt_temps.get(comp, 0)]
         for comp in components
     }
     for comp, data in component_data.items():
-        print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K, T_vaporization = {data[2]} K")
+        print(f"{comp}: H_fusion = {data[0]} J/mol, T_fusion = {data[1]} K")
 
     if config.dir_structure == 'nested':
         sys_dir = os.path.join(config.data_dir, sys_name)
@@ -234,6 +238,7 @@ def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, list[list] | None]:
         if not mpds_api_key:
             print("MPDS_API_KEY not found in environment variables. Proceeding without binary phase data.")
             return mpds_json, component_data, (None, False)
+        _require_mpds_client()
         client = MPDSDataRetrieval(api_key=mpds_api_key)
         client.dtype = MPDSDataTypes.PEER_REVIEWED
         fields = {'C': ['chemical_elements', 'entry', 'comp_range', 'temp', 'labels', 'shapes', 'reference']}
@@ -507,22 +512,22 @@ def get_dft_convexhull(input, dft_type='GGA',
             json.dump(computed_entry_dicts, f)
 
     if any(len(Composition(c).elements) > 1 for c in components):
-        pd = CompoundPhaseDiagram(
+        dft_ch = CompoundPhaseDiagram(
             terminal_compositions=[Composition(c) for c in components],
             entries=[ComputedEntry.from_dict(e) for e in computed_entry_dicts],
         )
     else:
-        pd = PhaseDiagram(
+        dft_ch = PhaseDiagram(
             elements=[Element(c) for c in components],
             entries=[ComputedEntry.from_dict(e) for e in computed_entry_dicts],
         )
     if verbose:
-        print(f"{len(pd.stable_entries) - 2} stable line compound(s) on the DFT convex hull.")
+        print(f"{len(dft_ch.stable_entries) - 2} stable line compound(s) on the DFT convex hull.")
 
     stable_entry_atomic_volumes = {}
 
     if inc_structure_data:
-        for entry in pd.stable_entries:
+        for entry in dft_ch.stable_entries:
             entries_matching_composition = [
                 e
                 for e in computed_entry_dicts
@@ -535,4 +540,28 @@ def get_dft_convexhull(input, dft_type='GGA',
             atomic_volume = ucell_volume / ucell_n_atoms  # Atomic volume in cubic angstroms per atom
             stable_entry_atomic_volumes[entry.composition.reduced_formula] = atomic_volume
 
-    return pd, stable_entry_atomic_volumes
+    return dft_ch, stable_entry_atomic_volumes
+
+    
+def get_hull_rel_enth_skew(dft_ch: PhaseDiagram) -> float:
+    """
+    Calculate the enthalpy skew of the DFT T=0K convex hull, relative to the ideal liquid enthalpy.
+    """
+    hull_skew = (melt_enthalpies[str(dft_ch.elements[0])] - melt_enthalpies[str(dft_ch.elements[1])]) / 4.0
+    for e in dft_ch.stable_entries:
+        xb_comp = e.composition.fractional_composition.as_dict().get(str(dft_ch.elements[1]), 0)
+        form_energy_kj = dft_ch.get_form_energy_per_atom(e) * 96485
+        hull_skew += (xb_comp - 0.5) * form_energy_kj 
+    return float(hull_skew)
+
+
+def get_hull_rel_mid_depth(dft_ch: PhaseDiagram) -> float:
+    """
+    Calculate the depth at the middle composition of the DFT T=0K convex hull, relative to the ideal liquid enthalpy.
+    """
+    lhs_ref = dft_ch.get_hull_energy_per_atom(Composition({str(dft_ch.elements[0]): 1}))
+    rhs_ref = dft_ch.get_hull_energy_per_atom(Composition({str(dft_ch.elements[1]): 1}))
+    hull_mid_ref = dft_ch.get_hull_energy_per_atom(Composition({str(e): 0.5 for e in dft_ch.elements}))
+    e_depth = hull_mid_ref * 96485 - (lhs_ref * 96485 + melt_enthalpies[str(dft_ch.elements[0])] + 
+                                    rhs_ref * 96485 + melt_enthalpies[str(dft_ch.elements[1])]) / 2 
+    return float(e_depth)
