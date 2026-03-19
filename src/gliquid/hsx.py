@@ -105,7 +105,8 @@ class HSX:
             if np.isclose(n[2], 0.0, atol=1e-12):
                 continue
             T = (-n[1] / n[2]) * self.scaler
-            if np.isfinite(T):
+            # Exclude non-physical temperatures below absolute zero (0 K).
+            if np.isfinite(T) and T >= 0.0:
                 temps.append(T)
                 valid_simplices.append(simplex)
                 new_phases.append([self.df.loc[simplex[i], 'Phase'] for i in range(3)])

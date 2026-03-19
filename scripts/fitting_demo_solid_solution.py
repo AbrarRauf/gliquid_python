@@ -956,8 +956,15 @@ def build_tx_with_solid_solution(
             for temp_c, _, comps, phases in inv_points.get(inv_type, []):
                 if len(comps) != 3:
                     continue
-                if "L" not in [str(p) for p in phases]:
+                phase_labels = [str(p) for p in phases]
+                if "L" not in phase_labels:
                     continue
+                if inv_type == "Misc Gaps": #NOTE: Revisit this in the future to make sure this does not effect true misc gaps
+                    non_liq = [p for p in phase_labels if p != "L"]
+                    # SS-L boundaries can appear as "Misc Gaps" due to duplicate-phase simplex handling,
+                    # but they are regular boundaries and should not be shown as invariant tie-lines.
+                    if non_liq and len(set(non_liq)) <= 1 and any(p in system.ss_names for p in non_liq):
+                        continue
                 comps_pct = [float(x) * 100.0 for x in comps]
                 fig.add_trace(
                     go.Scatter(
@@ -1234,9 +1241,10 @@ def main():
     # elts = ["Zr", "Hf", "Nb", "W", "Al"]
     # system_combos = [sorted(elts[i], elts[j]) for i in range(len(elts)) for j in range(i + 1, len(elts))]
 
-    # sys_name = "Nb-W"
-    sys_name = "Al-Zr"
+    # sys_name = "Hf-Nb"
+    # sys_name = "Al-Zr"
     # sys_name = "W-Zr"
+    sys_name = "Hf-W"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
 
