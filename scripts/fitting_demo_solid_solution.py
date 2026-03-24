@@ -1095,8 +1095,19 @@ def build_tx_with_solid_solution(
         system.update_phase_points()
 
     df_tx, final_phases, simplices, temps_k = system.hsx.compute_tx()
+    valid_mask = np.isfinite(temps_k) & (temps_k >= 0.0)
+    if not np.all(valid_mask):
+        temps_k = temps_k[valid_mask]
+        simplices = simplices[valid_mask]
+        final_phases = final_phases[valid_mask]
+
     if len(df_tx) == 0:
         raise RuntimeError("HSX compute_tx produced no points for line rendering.")
+
+    if "t" in df_tx.columns:
+        df_tx = df_tx[np.isfinite(df_tx["t"].astype(float)) & (df_tx["t"].astype(float) >= 0.0)].copy()
+    if len(df_tx) == 0 or len(temps_k) == 0:
+        raise RuntimeError("No physically valid (T >= 0 K) HSX coexistence points available for line rendering.")
 
     temps_c = temps_k - 273.15
     df = df_tx.copy()
@@ -1323,6 +1334,8 @@ def build_tx_with_solid_solution(
 
         for inv_type in ("Eutectics", "Peritectics", "Misc Gaps"):
             for temp_c, _, comps, phases in inv_points.get(inv_type, []):
+                if not np.isfinite(float(temp_c)) or float(temp_c) < -273.15:
+                    continue
                 if len(comps) != 3:
                     continue
                 phase_labels = [str(p) for p in phases]
@@ -1620,9 +1633,9 @@ def main():
    
     # ref modes: omegas-legacy, binary-cache, element-db
     # sys_name = "Nb-Zr"
-    # sys_name = "Hf-W"
+    sys_name = "Nb-W"
     # sys_name = "Al-Zr"
-    sys_name = "Te-Zr"
+    # sys_name = "Te-Zr"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
     # system.update_phase_points()
