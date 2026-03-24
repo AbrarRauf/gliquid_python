@@ -1,25 +1,29 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import pandas as pd
 
 import numpy as np
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 import sympy as sp
 
 import gliquid.config as cfg
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+# WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 print(f"Setting workspace root to: {WORKSPACE_ROOT}")
 
 cfg.set_project_root(WORKSPACE_ROOT)
 cfg.set_data_dir(Path(cfg.project_root / "matrix_data"))
 cfg.set_dir_structure(cfg._DIR_STRUCT_OPTS[1])
+from ternary_interpolation.auth import mpapi_key
+os.environ["MP_API_KEY"] = mpapi_key
 
 import gliquid.load_binary_data as lbd
+from gliquid.hsx import HSX
 from gliquid.binary import (
     BLPlotter,
     BinaryLiquid,
@@ -31,16 +35,11 @@ from gliquid.binary import (
     d_sym,
     t_sym,
     xb_sym,
-)
-from pymatgen.analysis.phase_diagram import CompoundPhaseDiagram, PDPlotter, PhaseDiagram
-from pymatgen.core import Composition, Element
-from pymatgen.entries.computed_entries import ComputedEntry
+    build_thermodynamic_expressions,
+)  
+from pymatgen.analysis.phase_diagram import PDPlotter, PhaseDiagram
+from pymatgen.entries.computed_entries import ComputedStructureEntry
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-try:
-    from mp_api.client import MPRester
-except Exception:
-    MPRester = None
 
 
 EV_PER_ATOM_TO_J_PER_MOL = 96485.0
@@ -57,7 +56,7 @@ SS_SGS = {
     "FCC": 225,
     "HCP": 194,
 }
-DEFAULT_REF_MODE = "omegas-legacy"  # Options: "local-cache", "omegas-legacy"
+DEFAULT_REF_MODE = "omegas-legacy"  # Options: "binary-cache", "omegas-legacy", or "element-db"
 DEFAULT_OMEGAS_PATH = cfg.data_dir / "omegas.json"
 
 # Fixed colors for solution phases; these are reserved and never reused for hull phases.
@@ -71,182 +70,594 @@ def _safe_spacegroup(structure) -> tuple[int | None, str | None]:
     try:
         sga = SpacegroupAnalyzer(structure, symprec=1e-2)
         return int(sga.get_space_group_number()), str(sga.get_space_group_symbol())
-    except Exception:
+    except Exception as e:
+        print(e)
         return None, None
 
 
-def get_ss_model_refs_from_local_entries(
-    components: list[str],
-    dft_ch: PhaseDiagram
-) -> dict[str, dict[str, float | str | int]]:
+def get_dft_ch_entries(input, dft_type='GGA',
+                       verbose=False) -> list[ComputedStructureEntry]:
+    """
+    Returns the DFT convex hull of a given system with specified functionals.
+
+    Args:
+        input (str or list): System specification (e.g., 'A-B' or ['A', 'B']).
+        dft_type (str): Functional type, e.g., 'GGA', 'GGA/GGA+U', etc.
+        inc_structure_data (bool): Whether to include structural data.
+        verbose (bool): Whether to print detailed output.
+
+    Returns:
+        A tuple of the phase diagram and a dictionary of stable entry atomic volumes.
+    """
+    components, sys_name, _ = lbd.validate_and_format_binary_system(input)
+
+    supp_dft_types = ["GGA", "R2SCAN", "MIXED"]
+    if dft_type not in supp_dft_types:
+        raise SyntaxError(
+            f"dft_type '{dft_type}' is not currently supported! "
+            f"Please specify as one of the following: {', '.join(supp_dft_types)}"
+        )
+    if verbose:
+        print(f"Using DFT entries solved with {dft_type} functionals.")
+
+    if cfg.dir_structure == 'nested':
+        sys_dir = os.path.join(cfg.data_dir, sys_name)
+        os.makedirs(sys_dir, exist_ok=True)
+    elif cfg.dir_structure == 'flat':
+        sys_dir = cfg.data_dir
+    else:
+        raise ValueError(f"Invalid dir_structure '{cfg.dir_structure}'. Must be 'nested' or 'flat'.")
     
-    entries = dft_ch.all_entries
+    dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
 
-    ss_models = {ss_phase: {} for ss_phase in ALL_SS_PHASES}
+    # Yb-containing structures are only available with R2SCAN functional
+    # See https://docs.materialsproject.org/changes/database-versions#v2023.11.1
+    # and https://docs.materialsproject.org/changes/database-versions#v2025.02.12
+    if 'Yb' in components and not os.path.exists(dft_entries_file):
+        print("Warning: Yb-containing structures are only available with R2SCAN or MIXED functionals on the MP database.") 
+        # dft_type = 'R2SCAN' # optional, uncomment these lines to enforce R2SCAN functionals for Yb systems
+        # dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
 
-    ground_refs: dict[str, dict[str, float | str | int]] = {}
-    phase_refs: dict[str, dict[str, dict[str, float | str | int]]] = {}
+    query_mp = True
+    if os.path.exists(dft_entries_file):
+        query_mp = False
+        with open(dft_entries_file, "r") as f:
+            computed_entry_dicts = json.load(f)
+        if verbose:
+            print("Loading cached DFT entry data.")
+    if not any(c.get('data', None) is None for c in computed_entry_dicts):
+        query_mp = True
 
-    for el in components:
-        pure_entries = [entry for entry in entries if entry.composition.reduced_formula == el]
-        if not pure_entries:
-            raise RuntimeError(f"No pure-element entries found for '{el}'.")
+    if query_mp:
+        computed_entry_dicts = lbd._get_dft_entries_from_components(components, dft_type, keep_data=True)
+        if verbose:
+            print(f"Caching DFT entry data as {dft_entries_file}...")
+        with open(dft_entries_file, "w") as f:
+            json.dump(computed_entry_dicts, f)
+    return [ComputedStructureEntry.from_dict(entry_dict) for entry_dict in computed_entry_dicts]
 
-        ground = min(pure_entries, key=lambda entry: float(entry.energy_per_atom))
-        ground_sg, ground_symbol = _safe_spacegroup(getattr(ground, "structure", None))
 
-        ground_refs[el] = {
-            "source": "local-cache",
-            "ground_material_id": str(getattr(ground, "entry_id", "unknown")),
-            "ground_spacegroup": int(ground_sg) if ground_sg is not None else -1,
-            "ground_symbol": ground_symbol or "unknown",
-            "ground_energy_ev_per_atom": float(ground.energy_per_atom),
-            "ss_phases": []
-        }
+def _find_gs_polymorph(polymorphs: list[dict[str, any]]) -> dict[str, any] | None:
+    for p in polymorphs:
+        if p["delta_H_J_per_mol"] == 0:
+            return p
+    return None
 
-        candidates: dict[str, list[ComputedEntry]] = {}
-        for entry in pure_entries:
-            sg_num, _ = _safe_spacegroup(getattr(entry, "structure", None))
-            for phase, sg in SS_SGS.items():
-                if sg_num == sg:
-                    if phase not in candidates:
-                        candidates[phase] = []
-                    candidates[phase].append(entry)
+def _find_matching_polymorph(phase, polymorphs: dict[str, list[any]]) -> dict[str, any] | None:
+    for p in polymorphs:
+        if p["spacegroup_number"] == SS_SGS[phase]:
+            if p["spacegroup_symbol"] != SS_SYMBOLS[phase]:
+                print("Warning: spacegroup symbol does not match expected for phase '{phase}'. Check for inconsistencies in the omegas file.")
+            return p
+    return None
 
-        for ss_phase in ALL_SS_PHASES:
-            if ss_phase not in candidates.keys():
-                print(f"No {ss_phase} (spacegroup {SS_SGS[ss_phase]}) pure entry found for '{el}' in local cache.")
-                continue
-            e = min(candidates[ss_phase], key=lambda entry: float(entry.energy_per_atom))
-            sg, symbol = _safe_spacegroup(getattr(e, "structure", None))
-            delta_e_ev = float(e.energy_per_atom) - float(ground.energy_per_atom)
-            phase_refs[ss_phase][el] = {
-                "material_id": str(getattr(e, "entry_id", "unknown")),
-                "spacegroup": int(sg) if sg is not None else SS_SGS[ss_phase],
-                "symbol": symbol or SS_SYMBOLS[ss_phase],
-                "energy_ev_per_atom": float(e.energy_per_atom),
-                "delta_e_ev": float(delta_e_ev),
-                "delta_e_jmol": float(delta_e_ev * EV_PER_ATOM_TO_J_PER_MOL)}
+def _compute_solid_ss_entropy(
+    el: str,
+    ss_phase: str,
+    delta_h_jmol: float,
+    phase_refs_so_far: dict[str, dict[str, dict]],
+    phase_transitions: dict[str, dict],
+) -> float:
+    """
+    Compute the cumulative entropy for a solid SS phase using the stepwise
+    formula S = Σ ΔH_i / T_i over all SS phases with known transition
+    temperatures at or below this phase's transition temperature.
 
-    for ss_phase in phase_refs.keys():
-        refs = ground_refs.copy()
-        for el in components:
-            refs[el].update(phase_refs[ss_phase][el]) if el in phase_refs[ss_phase] else None
-        ss_models[ss_phase].update({"refs": refs})
+    phase_refs_so_far may be partially populated — only phases already
+    resolved and present in it are included in the sum.
+    """
+    elem_pt = phase_transitions.get(el, {})
+    phase_pt = next(
+        (p for p in elem_pt.get("phases", [])
+         if p.get("phase_type") == "solid"
+         and p.get("spacegroup_number") == SS_SGS.get(ss_phase)),
+        None,
+    )
+    t_this = phase_pt.get("transition_temperature_K") if phase_pt else None
+    if t_this is None or t_this <= 0:
+        return 0.0
 
-    print(ss_models)        
+    # Gather all SS steps with known T <= t_this, including this phase itself
+    candidates: list[tuple[float, float]] = []
+    for phase, refs in phase_refs_so_far.items():
+        if el not in refs:
+            continue
+        p_pt = next(
+            (p for p in elem_pt.get("phases", [])
+             if p.get("phase_type") == "solid"
+             and p.get("spacegroup_number") == SS_SGS.get(phase)),
+            None,
+        )
+        t_p = p_pt.get("transition_temperature_K") if p_pt else None
+        if t_p is not None and 0 < t_p <= t_this:
+            candidates.append((refs[el]["delta_h_jmol"], t_p))
+
+    # Include this phase itself
+    candidates.append((delta_h_jmol, t_this))
+    candidates.sort(key=lambda x: x[1])
+
+    s_accum = 0.0
+    prev_h = 0.0
+    for dh, t in candidates:
+        s_accum += (dh - prev_h) / t
+        prev_h = dh
+
+    return s_accum
+
+def _make_ground_ref(
+    source: str,
+    material_id: str,
+    spacegroup: int,
+    symbol: str,
+    energy_ev_per_atom: float,
+) -> dict[str, float | str | int]:
+    return {
+        "source": source,
+        "ground_material_id": material_id,
+        "ground_spacegroup": spacegroup,
+        "ground_symbol": symbol,
+        "ground_energy_ev_per_atom": energy_ev_per_atom,
+    }
+
+
+def _make_phase_ref(
+    ss_phase: str,
+    material_id: str,
+    energy_ev_per_atom: float,
+    delta_h_jmol: float,
+    delta_s_jmol_k: float,
+    spacegroup: int | None = None,
+    symbol: str | None = None,
+) -> dict[str, float | str | int]:
+    return {
+        "material_id": material_id,
+        "spacegroup": spacegroup if spacegroup is not None else SS_SGS.get(ss_phase, -1),
+        "symbol": symbol if symbol is not None else SS_SYMBOLS.get(ss_phase, "unknown"),
+        "energy_ev_per_atom": energy_ev_per_atom,
+        "delta_h_jmol": delta_h_jmol,
+        "delta_s_jmol_k": delta_s_jmol_k,
+    }
+
+
+def _build_ss_models_from_refs(
+    components: list[str],
+    ground_refs: dict[str, dict],
+    phase_refs: dict[str, dict[str, dict]],
+) -> dict[str, dict]:
+    """Merge ground_refs and phase_refs into the ss_models skeleton."""
+    ss_models: dict[str, dict] = {}
+    for ss_phase, el_refs in phase_refs.items():
+        refs = {el: dict(ground_refs[el]) for el in components}
+        for el, pr in el_refs.items():
+            refs[el].update(pr)
+        ss_models[ss_phase] = {"refs": refs}
     return ss_models
 
-def _build_single_ss_model_legacy(
+
+def _package_ss_models(
+    ss_models: dict[str, dict],
+    components: list[str],
+    omega_data: dict[str, dict[str, float]],
+    pair_key: str,
+    ref_mode: str,
+) -> dict[str, dict]:
+    """
+    Attach omega and delta H/S fields to every phase in ss_models in-place.
+    Raises KeyError if omega is missing for a phase that has refs.
+    """
+    for ss_phase, model_dict in ss_models.items():
+        if "refs" not in model_dict:
+            continue
+        omega_block = omega_data.get(ss_phase, {})
+        if pair_key not in omega_block:
+            raise KeyError(
+                f"Could not find omega for pair '{pair_key}' in phase '{ss_phase}'."
+            )
+        refs = model_dict["refs"]
+        model_dict.update({
+            "ref_mode": ref_mode,
+            "omega_jmol": float(omega_block[pair_key]) * EV_PER_ATOM_TO_J_PER_MOL,
+            "deltaH_a_jmol": float(refs[components[0]]["delta_h_jmol"]),
+            "deltaH_b_jmol": float(refs[components[1]]["delta_h_jmol"]),
+            "deltaS_a_jmol_k": float(refs[components[0]]["delta_s_jmol_k"]),
+            "deltaS_b_jmol_k": float(refs[components[1]]["delta_s_jmol_k"]),
+        })
+    return ss_models
+
+
+def _resolve_refs_legacy(
     data: dict,
     components: list[str],
-    ss_phase: str,
-    pair_key: str,
-) -> dict[str, float]:
+    component_data: dict | None,
+    phase_transitions: dict[str, dict] | None,
+) -> tuple[dict, dict]:
+    """
+    Build ground_refs and phase_refs from the flat omegas file (legacy format).
+
+    Entropy reference: recalculated from transition temperature when
+    component_data is available and not in legacy list format.
+    """
     element_blocks: dict[str, dict[str, float]] = data["elements"]
 
-    stable_pure = {}
+    # Ground state = minimum energy across all phases listed in the file
+    stable_pure: dict[str, float] = {}
     for el in components:
         candidates = [float(block[el]) for block in element_blocks.values() if el in block]
         if not candidates:
-            raise KeyError(f"Could not find pure-element references for '{el}' in omegas file.")
+            raise KeyError(
+                f"Could not find pure-element references for '{el}' in omegas file."
+            )
         stable_pure[el] = min(candidates)
 
-    refs = {}
-    for el in components:
-        ss_e = float(element_blocks[ss_phase][el])
-        ground_e = stable_pure[el]
-        delta_ev = ss_e - ground_e
-        refs[el] = {
-            "source": "omegas-legacy",
-            "ground_material_id": "legacy",
-            "ground_spacegroup": -1,
-            "ground_symbol": "legacy",
-            "ground_energy_ev_per_atom": float(ground_e),
-            "material_id": "legacy",
-            "spacegroup": SS_SGS.get(ss_phase, -1),
-            "symbol": SS_SYMBOLS.get(ss_phase, "unknown"),
-            "energy_ev_per_atom": float(ss_e),
-            "delta_e_ev": float(delta_ev),
-            "delta_e_jmol": float(delta_ev * EV_PER_ATOM_TO_J_PER_MOL),
-        }
-
-    offset_a_ev = float(refs[components[0]]["delta_e_ev"])
-    offset_b_ev = float(refs[components[1]]["delta_e_ev"])
-    omega_ev = float(data["omegas"][ss_phase][pair_key])
-
-    return {
-        "ref_mode": "omegas-legacy",
-        "refs": refs,
-        "omega_ev": omega_ev,
-        "omega_jmol": omega_ev * EV_PER_ATOM_TO_J_PER_MOL,
-        "offset_a_ev": offset_a_ev,
-        "offset_b_ev": offset_b_ev,
-        "offset_a_jmol": offset_a_ev * EV_PER_ATOM_TO_J_PER_MOL,
-        "offset_b_jmol": offset_b_ev * EV_PER_ATOM_TO_J_PER_MOL,
+    ground_refs: dict[str, dict] = {
+        el: _make_ground_ref(
+            source="omegas-legacy",
+            material_id="legacy",
+            spacegroup=-1,
+            symbol="legacy",
+            energy_ev_per_atom=stable_pure[el],
+        )
+        for el in components
     }
 
+    phase_refs: dict[str, dict[str, dict]] = {}
+    for ss_phase, phase_block in element_blocks.items():
+        if not all(el in phase_block for el in components):
+            continue
+        phase_refs[ss_phase] = {}
+        for el in components:
+            ss_e = float(phase_block[el])
+            delta_h_jmol = (ss_e - stable_pure[el]) * EV_PER_ATOM_TO_J_PER_MOL
+
+            delta_s_jmol_k = 0.0
+            if component_data:
+                poly = _find_matching_polymorph(ss_phase, component_data[el].get("polymorphs", {}))
+                t_trans = poly.get("transition_temperature_K", 0) if poly else 0
+                if t_trans > 0:
+                    delta_s_jmol_k = _compute_solid_ss_entropy(el, ss_phase, delta_h_jmol, phase_refs, phase_transitions)
+
+            phase_refs[ss_phase][el] = _make_phase_ref(
+                ss_phase=ss_phase,
+                material_id="legacy",
+                energy_ev_per_atom=ss_e,
+                delta_h_jmol=delta_h_jmol,
+                delta_s_jmol_k=delta_s_jmol_k,
+            )
+
+    return ground_refs, phase_refs
+
+
+def _resolve_refs_cache(
+    components: list[str],
+    entries: list[ComputedStructureEntry],
+) -> tuple[dict, dict]:
+    """
+    Build ground_refs and phase_refs from pymatgen ComputedStructureEntries.
+
+    Entropy reference: set to zero (DFT gives no finite-T entropy correction).
+    """
+    ground_refs: dict[str, dict] = {}
+    phase_refs: dict[str, dict[str, dict]] = {}
+
+    for el in components:
+        pure_entries = [e for e in entries if e.composition.reduced_formula == el]
+        if not pure_entries:
+            raise RuntimeError(f"No pure-element entries found for '{el}'.")
+
+        ground = min(pure_entries, key=lambda e: float(e.energy_per_atom))
+        ground_sg, ground_symbol = _safe_spacegroup(getattr(ground, "structure", None))
+
+        ground_refs[el] = _make_ground_ref(
+            source="binary-cache",
+            material_id=str(getattr(ground, "entry_id", "unknown")),
+            spacegroup=int(ground_sg) if ground_sg is not None else -1,
+            symbol=ground_symbol or "unknown",
+            energy_ev_per_atom=float(ground.energy_per_atom),
+        )
+
+        for ss_phase in ALL_SS_PHASES:
+            phase_entries = [
+                e for e in pure_entries
+                if _safe_spacegroup(getattr(e, "structure", None))[0] == SS_SGS[ss_phase]
+            ]
+            if not phase_entries:
+                print(
+                    f"No {ss_phase} (spacegroup {SS_SGS[ss_phase]}) pure entry "
+                    f"found for '{el}' in local cache."
+                )
+                continue
+
+            best = min(phase_entries, key=lambda e: float(e.energy_per_atom))
+            sg, symbol = _safe_spacegroup(getattr(best, "structure", None))
+            delta_h_jmol = (float(best.energy_per_atom) - float(ground.energy_per_atom)) \
+                           * EV_PER_ATOM_TO_J_PER_MOL
+
+            phase_refs.setdefault(ss_phase, {})[el] = _make_phase_ref(
+                ss_phase=ss_phase,
+                material_id=str(getattr(best, "entry_id", "unknown")),
+                energy_ev_per_atom=float(best.energy_per_atom),
+                delta_h_jmol=delta_h_jmol,
+                delta_s_jmol_k=0.0,
+                spacegroup=int(sg) if sg is not None else SS_SGS[ss_phase],
+                symbol=symbol or SS_SYMBOLS[ss_phase],
+            )
+
+    return ground_refs, phase_refs
+
+
+def _resolve_refs_db(
+    components: list[str],
+    component_data: dict[str, dict],
+) -> tuple[dict, dict]:
+    """
+    Build ground_refs and phase_refs from the element-db (component_data).
+
+    Entropy reference: taken directly from delta_S_J_per_mol_K in the polymorph
+    entry when present; falls back to 0.0 for legacy component_data that lacks it.
+    """
+    ground_refs: dict[str, dict] = {}
+    phase_refs: dict[str, dict[str, dict]] = {}
+
+    for el in components:
+        polymorphs = component_data[el].get("polymorphs", {})
+        p_ground = _find_gs_polymorph(polymorphs)
+
+        ground_refs[el] = _make_ground_ref(
+            source="element-db",
+            material_id=p_ground.get("materials_project_id", "unknown") if p_ground else "unknown",
+            spacegroup=p_ground.get("spacegroup_number", -1) if p_ground else -1,
+            symbol=p_ground.get("spacegroup_symbol", "unknown") if p_ground else "unknown",
+            energy_ev_per_atom=(
+                p_ground.get("enthalpy_J_per_mol", -EV_PER_ATOM_TO_J_PER_MOL)
+                / EV_PER_ATOM_TO_J_PER_MOL
+            ) if p_ground else -1.0,
+        )
+
+        for ss_phase in ALL_SS_PHASES:
+            p_poly = _find_matching_polymorph(ss_phase, polymorphs)
+            if p_poly is None:
+                continue
+            phase_refs.setdefault(ss_phase, {})[el] = _make_phase_ref(
+                ss_phase=ss_phase,
+                material_id=p_poly.get("materials_project_id", "unknown"),
+                energy_ev_per_atom=p_poly.get(
+                    "enthalpy_J_per_mol", -EV_PER_ATOM_TO_J_PER_MOL
+                ) / EV_PER_ATOM_TO_J_PER_MOL,
+                delta_h_jmol=p_poly.get("delta_H_J_per_mol", -1.0),
+                # Falls back to 0.0 when key is absent (legacy component_data)
+                delta_s_jmol_k=p_poly.get("delta_S_J_per_mol_K", 0.0),
+                spacegroup=p_poly.get("spacegroup_number", SS_SGS[ss_phase]),
+                symbol=p_poly.get("spacegroup_symbol", SS_SYMBOLS[ss_phase]),
+            )
+
+    return ground_refs, phase_refs
+
+def _accumulate_entropy(
+    el: str,
+    ordered_solid_steps: list[tuple[float, float]],
+    phase_transitions: dict[str, dict],
+) -> tuple[float, float]:
+    """
+    Compute cumulative (H_liq, S_liq) by stepwise accumulation of ΔS = ΔH / T
+    over ordered solid steps up to and including the fusion step.
+
+    Args:
+        el: Element symbol.
+        ordered_solid_steps: List of (delta_h_jmol, transition_temperature_K)
+            for each solid phase below the melt, ordered by increasing
+            transition temperature. delta_h_jmol is the resolver-produced
+            cumulative enthalpy for that phase (relative to ground state).
+        phase_transitions: The elements dict from phase_transitions.json.
+
+    Returns:
+        (H_liq, S_liq) where S_liq = Σ ΔH_i/T_i over all steps including fusion.
+    """
+    elem_pt = phase_transitions.get(el, {})
+    liquid_phase = next(
+        (p for p in elem_pt.get("phases", []) if p["phase_type"] == "liquid"),
+        None,
+    )
+    if liquid_phase is None:
+        print(f"Warning: No liquid phase found for '{el}' in phase_transitions. H_liq/S_liq set to 0.")
+        return 0.0, 0.0
+
+    h_fusion = liquid_phase.get("delta_H_J_per_mol")
+    t_melt = liquid_phase.get("transition_temperature_K")
+    if h_fusion is None or t_melt is None or t_melt <= 0:
+        print(f"Warning: Missing fusion enthalpy or melt temperature for '{el}'. H_liq/S_liq set to 0.")
+        return 0.0, 0.0
+
+    # Stepwise entropy accumulation over solid steps.
+    # Each step's ΔH is the increment from the previous phase, not the
+    # cumulative value, so we difference consecutive cumulative enthalpies.
+    s_accum = 0.0
+    prev_h = 0.0  # ground state: H = 0
+    for delta_h_jmol, t_trans in ordered_solid_steps:
+        delta_h_step = delta_h_jmol - prev_h
+        s_accum += delta_h_step / t_trans
+        prev_h = delta_h_jmol
+
+    # Final fusion step
+    h_liq = prev_h + h_fusion
+    s_liq = s_accum + h_fusion / t_melt
+
+    return h_liq, s_liq
+
+
+def _get_ordered_solid_steps_from_phase_refs(
+    el: str,
+    phase_refs: dict[str, dict[str, dict]],
+    phase_transitions: dict[str, dict],
+    t_melt: float,
+) -> list[tuple[float, float]]:
+    """
+    Build an ordered list of (delta_h_jmol, transition_temperature_K) for
+    all SS phases that have a known transition temperature strictly below
+    T_melt, ordered by increasing transition temperature.
+
+    Transition temperatures are always taken from phase_transitions regardless
+    of resolver, since omegas/cache sources don't provide temperatures.
+    Only phases present in phase_refs are considered — intermediate phases
+    in phase_transitions that are not SS phases are excluded.
+    """
+    elem_pt = phase_transitions.get(el, {})
+    candidates: list[tuple[float, float]] = []
+
+    for ss_phase, refs in phase_refs.items():
+        if el not in refs:
+            continue
+        phase_pt = next(
+            (p for p in elem_pt.get("phases", [])
+             if p.get("phase_type") == "solid"
+             and p.get("spacegroup_number") == SS_SGS.get(ss_phase)),
+            None,
+        )
+        t_trans = phase_pt.get("transition_temperature_K") if phase_pt else None
+        if t_trans is None or t_trans <= 0 or t_trans >= t_melt:
+            continue
+        candidates.append((refs[el]["delta_h_jmol"], t_trans))
+
+    return sorted(candidates, key=lambda x: x[1])
+
+
+def _reconcile_liquid_refs_in_component_data(
+    components: list[str],
+    component_data: dict[str, dict],
+    phase_refs: dict[str, dict[str, dict]],
+    phase_transitions: dict[str, dict],
+) -> None:
+    """
+    Overwrite H_liq and S_liq in component_data using the general stepwise
+    entropy accumulation formula:
+
+        S_liq = Σ ΔH_i / T_i   (solid steps) + H_fusion / T_melt
+
+    where ΔH_i are incremental enthalpies between consecutive phases and T_i
+    are their transition temperatures. Solid steps use resolver-produced
+    delta_h_jmol values; temperatures and fusion data come from
+    phase_transitions.json.
+
+    Only SS phases present in phase_refs are included in the solid steps —
+    intermediate phases from phase_transitions that are not SS phases are
+    excluded. If no SS phases fall below T_melt the ground state (H=S=0)
+    is used as the sole prior step.
+
+    Mutates component_data in-place.
+    """
+    for el in components:
+        elem_pt = phase_transitions.get(el, {})
+        t_melt = next(
+            (p.get("transition_temperature_K") for p in elem_pt.get("phases", [])
+             if p["phase_type"] == "liquid"),
+            None,
+        )
+        if t_melt is None:
+            print(f"Warning: No melt temperature found for '{el}'. Skipping reconciliation.")
+            continue
+
+        ordered_steps = _get_ordered_solid_steps_from_phase_refs(
+            el, phase_refs, phase_transitions, t_melt
+        )
+        h_liq, s_liq = _accumulate_entropy(el, ordered_steps, phase_transitions)
+        component_data[el]["H_liq"] = h_liq
+        component_data[el]["S_liq"] = s_liq
 
 def load_solid_solution_models(
     omegas_path: Path,
     components: list[str],
-    dft_ch: PhaseDiagram,
+    component_data: dict[str, any],
+    entries: list[ComputedStructureEntry],
+    phase_transitions: dict[str, dict],
     ref_mode: str = DEFAULT_REF_MODE,
-    ) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, float]]:
+
+    legacy_component_data = False
+    if any(isinstance(v, list) for v in component_data.values()):
+        print(
+            "Using component data from legacy format (list of dicts). "
+            "Allotrope transition temperatures not considered."
+        )
+        legacy_component_data = True
+    elif not all(isinstance(v, dict) for v in component_data.values()):
+        raise ValueError(
+            "component_data values must be either a list of dicts (legacy) "
+            "or dict of dicts (element-db format)."
+        )
 
     data = json.loads(omegas_path.read_text(encoding="utf-8"))
     pair_key = "-".join(sorted(components))
+    omega_data: dict[str, dict[str, float]] = data.get("omegas", {})
 
+    # --- resolve source-specific refs ---
     if ref_mode == "omegas-legacy":
-        models: dict[str, dict[str, float]] = {}
-        element_blocks: dict[str, dict[str, float]] = data.get("elements", {})
-        omega_phases: dict[str, dict[str, float]] = data.get("omegas", {})
-
-        for ss_phase, omega_block in omega_phases.items():
-            if pair_key not in omega_block:
-                continue
-            if ss_phase not in element_blocks:
-                continue
-            if any(el not in element_blocks[ss_phase] for el in components):
-                continue
-            models[ss_phase] = _build_single_ss_model_legacy(
-                data=data,
-                components=components,
-                ss_phase=ss_phase,
-                pair_key=pair_key,
-            )
-
-        if not models:
+        # Filter to only phases that have both an omega and element entries
+        # for this pair before resolving, so phase_refs stays consistent.
+        available_phases = {
+            phase for phase, block in omega_data.items()
+            if pair_key in block and phase in data.get("elements", {})
+            and all(el in data["elements"][phase] for el in components)
+        }
+        if not available_phases:
             raise KeyError(
-                f"No solid-solution phases found for pair '{pair_key}' with matching omegas/elements entries."
+                f"No solid-solution phases found for pair '{pair_key}' "
+                f"with matching omegas/elements entries."
             )
-        return models
+        ground_refs, phase_refs = _resolve_refs_legacy(
+            data=data,
+            components=components,
+            component_data=component_data if not legacy_component_data else None,
+            phase_transitions=phase_transitions,
+        )
+        # Keep only the phases that passed the availability check above
+        phase_refs = {k: v for k, v in phase_refs.items() if k in available_phases}
 
-    #NOTE: What does the comment below mean? FOLLOW UP ON THIS.
-    if ref_mode == "local-cache": # Need to update to allow for multiple SS phases
+    elif ref_mode == "binary-cache":
+        ground_refs, phase_refs = _resolve_refs_cache(components, entries)
 
-        ss_models = get_ss_model_refs_from_local_entries(components, dft_ch)
-        for ss_phase, model_dict in ss_models.items():
-            omega_block = data["omegas"].get(ss_phase, {})
-            if pair_key not in omega_block:
-                raise KeyError(f"Could not find omega for pair '{pair_key}' in phase '{ss_phase}'.")
-            
-            offset_a_ev = float(model_dict["refs"][components[0]]["delta_e_ev"])
-            offset_b_ev = float(model_dict["refs"][components[1]]["delta_e_ev"])
-            omega_ev = float(omega_block[pair_key])
-            ss_models[ss_phase].update({
-                "ref_mode": "local-cache",
-                "omega_ev": omega_ev,
-                "omega_jmol": omega_ev * EV_PER_ATOM_TO_J_PER_MOL,
-                "offset_a_ev": offset_a_ev,
-                "offset_b_ev": offset_b_ev,
-                "offset_a_jmol": offset_a_ev * EV_PER_ATOM_TO_J_PER_MOL,
-                "offset_b_jmol": offset_b_ev * EV_PER_ATOM_TO_J_PER_MOL,
-            })
+    elif ref_mode == "element-db":
+        if legacy_component_data:
+            raise ValueError("ref_mode 'element-db' requires non-legacy component_data format.")
+        ground_refs, phase_refs = _resolve_refs_db(components, component_data)
 
-        return ss_models
+    else:
+        raise ValueError("ref_mode must be one of: binary-cache, omegas-legacy, element-db.")
     
-    raise ValueError("ref_mode must be one of: local-cache, omegas-legacy")
+    # Reconcile H_liq/S_liq in component_data using the resolver's own
+    # solid delta_h values. Skipped for legacy format since it carries no
+    # per-polymorph enthalpy data to derive a meaningful solid baseline from.
+    if not legacy_component_data:
+        _reconcile_liquid_refs_in_component_data(
+            components, component_data, phase_refs, phase_transitions
+        )
+    else:
+        print(
+            "Skipping H_liq/S_liq reconciliation: legacy component_data format "
+            "does not carry per-polymorph enthalpy data."
+        )
+
+    # --- shared assembly and packaging ---
+    ss_models = _build_ss_models_from_refs(components, ground_refs, phase_refs)
+    return _package_ss_models(ss_models, components, omega_data, pair_key, ref_mode)
 
 
 
@@ -272,22 +683,59 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
                 continue
             self.phases.insert(
                 insert_idx,
-                {"name": ss_name, "comp": 0.5, "enthalpy": 0.0, "entropy": 0.0, "points": []},
+                {'name': ss_name, 'is_solution': True, 'points': []},
             )
             insert_idx += 1
 
     @classmethod
     def from_cache(cls, input, **kwargs) -> SolidSolutionBinaryLiquid:
+        """
+        Create a SolidSolutionBinaryLiquid instance from cached data.
+        This class method loads binary liquid data from cache and constructs a 
+        SolidSolutionBinaryLiquid object with solid solution models. It filters 
+        phases to include only intermediate solid solutions (excluding pure endpoints 
+        where composition = 0 or 1).
+        Args:
+            input: Input identifier or path for loading cached binary liquid data.
+            **kwargs: Arbitrary keyword arguments including:
+                ref_mode (str): Reference mode for calculations. Defaults to DEFAULT_REF_MODE.
+                omegas_path (str): Path to omega parameters. Defaults to DEFAULT_OMEGAS_PATH.
+                verbose (bool): Enable verbose output. Defaults to False.
+                Additional arguments passed to parent class initialization.
+        Returns:
+            SolidSolutionBinaryLiquid: Initialized instance with loaded solid solution models
+                and phases filtered to include only intermediate compositions.
+        """
 
         bl = BinaryLiquid.from_cache(input, **kwargs)
+        ref_mode = kwargs.get("ref_mode", DEFAULT_REF_MODE)
 
         ss_models = load_solid_solution_models(
             components=bl.components,
-            dft_ch=bl.dft_ch,
+            component_data=bl.component_data,
+            entries=get_dft_ch_entries(bl.components, dft_type=bl.dft_type, verbose=kwargs.get("verbose", False)),
             omegas_path=kwargs.get("omegas_path", DEFAULT_OMEGAS_PATH),
-            ref_mode=kwargs.get("ref_mode", DEFAULT_REF_MODE),
+            phase_transitions=getattr(lbd, "phase_transitions", None),
+            ref_mode=ref_mode,
         )
+
+        print("Updated component data with reconciled liquid references:")
+        for comp, data in bl.component_data.items():
+            print(f"{comp}: H_liq = {data['H_liq']} J/mol, S_liq = {data['S_liq']:.4f} J/(mol·K), "
+              f"T_fusion = {data['T_fusion']} K, polymorphs = {len(data['polymorphs'])}")
+
+        phases = [p for p in bl.phases if not any(s.lower() in p['name'].lower() for s in ALL_SS_PHASES)]
+
+        eqs = build_thermodynamic_expressions(
+            param_format=bl._param_format,
+            ga_expr=bl.component_data[bl.components[0]]['H_liq'] - \
+                t_sym * bl.component_data[bl.components[0]]['S_liq'],
+            gb_expr=bl.component_data[bl.components[1]]['H_liq'] - \
+                t_sym * bl.component_data[bl.components[1]]['S_liq'])
         
+        hull_points = np.array([[0, 0]] + [[p['comp'], p['enthalpy']] for p in phases if 'comp' in p] + [[1, 0]])
+        eqs['h_hull_interp'] = np.interp(_x_vals[1:-1], hull_points[:, 0], hull_points[:, 1])
+
         kwargs.update({
             'sys_name': bl.sys_name,
             'components': bl.components,
@@ -297,10 +745,10 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
             'temp_range': bl.temp_range,
             'dft_type': bl.dft_type,
             'dft_ch': bl.dft_ch,
-            'phases': bl.phases,
+            'phases': phases,
             'params': bl._params,
             'param_format': bl._param_format,
-            'eqs': bl.eqs,
+            'eqs': eqs,
             'comp_range_fit_lim': bl.comp_range_fit_lim,
             'init_error': bl.init_error
             })
@@ -310,7 +758,6 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
             **kwargs
         )
 
-
     def solid_solution_h_s(self, ss_name: str, x_vals: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         ss_model = self.ss_models[ss_name]
         x_arr = np.asarray(_x_vals if x_vals is None else x_vals, dtype=float)
@@ -319,49 +766,23 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
         xa = 1 - x_arr
         conf_term[interior] = xa[interior] * np.log(xa[interior]) + x_arr[interior] * np.log(x_arr[interior])
         s_conf = -R * conf_term
+        s_offsets = ss_model["deltaS_a_jmol_k"] * xa + ss_model["deltaS_b_jmol_k"] * x_arr
+        s_total = s_offsets + s_conf
 
-        h_offsets = ss_model["offset_a_jmol"] * xa + ss_model["offset_b_jmol"] * x_arr
+        h_offsets = ss_model["deltaH_a_jmol"] * xa + ss_model["deltaH_b_jmol"] * x_arr
         h_mix = ss_model["omega_jmol"] * xa * x_arr
         h_total = h_offsets + h_mix
 
-        return h_total, s_conf
-
+        return h_total, s_total
+    
     def solid_solution_gibbs(self, ss_name: str, x_vals: np.ndarray, temp_k: float) -> np.ndarray:
         h_vals, s_vals = self.solid_solution_h_s(ss_name, x_vals=x_vals)
         return h_vals - float(temp_k) * s_vals
 
-    def to_HSX(self, fmt: str = "dict"):  # noqa: N802
-        lambda_args_vals = [
-            _x_vals[1:-1],
-            self.mean_elt_tm,
-            self.get_L0_a(),
-            self.get_L0_b(),
-            self.get_L1_a(),
-            self.get_L1_b(),
-        ]
-        liq_h_vals = self.eqs["h_liq_lambdified"](*lambda_args_vals).flatten().tolist()
-        liq_s_vals = self.eqs["s_liq_lambdified"](*lambda_args_vals).flatten().tolist()
+    def to_HSX(self, fmt: str = "dict") -> dict | pd.DataFrame: 
 
-        lhs_h = float(self.component_data[self.components[0]][0])
-        rhs_h = float(self.component_data[self.components[1]][0])
-        lhs_s = 0.0 if lhs_h == 0.0 else lhs_h / float(self.component_data[self.components[0]][1])
-        rhs_s = 0.0 if rhs_h == 0.0 else rhs_h / float(self.component_data[self.components[1]][1])
+        data = super().to_HSX(fmt="dict")
 
-        data = {
-            "X": [float(x) for x in _x_vals],
-            "S": [float(lhs_s), *[float(s) for s in liq_s_vals], float(rhs_s)],
-            "H": [float(lhs_h), *[float(h) for h in liq_h_vals], float(rhs_h)],
-            "Phase Name": ["L"] * len(_x_vals),
-        }
-
-        for phase in self.phases:
-            name = phase["name"]
-            if name == "L" or name in self.ss_names:
-                continue
-            data["H"].append(float(phase["enthalpy"]))
-            data["S"].append(float(phase.get("entropy", 0.0)))
-            data["X"].append(round(float(phase["comp"]), _x_prec))
-            data["Phase Name"].append(name)
 
         for ss_name in self.ss_names:
             ss_h_vals, ss_s_vals = self.solid_solution_h_s(ss_name)
@@ -373,88 +794,36 @@ class SolidSolutionBinaryLiquid(BinaryLiquid):
         if fmt == "dict":
             return data
         if fmt == "dataframe":
-            import pandas as pd
-
             return pd.DataFrame(data)
         raise ValueError("kwarg 'fmt' must be either 'dict' or 'dataframe'!")
+
+    def update_phase_points(self) -> dict:
+        """
+        Calculates the phase points for given parameter values using the HSX class.
+
+        This method converts phase data into the HSX form and uses HSX code to calculate the liquidus
+        and low-temperature DFT phase boundaries.
+
+        Returns:
+            data (dict): A dictionary containing the phase data in HSX format, including phase names and components.
+        """
+        data = self.to_HSX()
+        hsx_dict = {
+            'data': data,
+            'phases': [phase['name'] for phase in self.phases],
+            'comps': self.components
+        }
+        self.hsx = HSX(hsx_dict, [self.temp_range[0] - 273.15, self.temp_range[-1] - 273.15], use_filter_2=False)
+        phase_points = self.hsx.get_phase_points()
+        for phase in self.phases:
+            phase['points'] = phase_points[phase['name']]
+        return data
 
 
 # def _linear_ref_expr(enthalpy_jmol: float, transition_temp_k: float) -> sp.Expr:
 #     if enthalpy_jmol == 0 or transition_temp_k == 0:
 #         return sp.Integer(0)
 #     return float(enthalpy_jmol) - t_sym * float(enthalpy_jmol) / float(transition_temp_k)
-
-
-# def query_element_refs_from_mp(
-#     components: list[str],
-#     api_key: str,
-# ) -> dict[str, dict[str, float | str | int]]:
-#     if MPRester is None:
-#         raise RuntimeError("mp_api is not installed; cannot query Materials Project.")
-#     if not api_key:
-#         raise RuntimeError("Missing MP API key for Materials Project query.")
-
-#     refs: dict[str, dict[str, float | str | int]] = {}
-#     with MPRester(api_key) as mpr:
-#         for el in components:
-#             docs = list(
-#                 mpr.materials.summary.search(
-#                     elements=[el],
-#                     num_elements=(1, 1),
-#                     fields=["material_id", "formula_pretty", "energy_per_atom", "energy_above_hull", "symmetry"],
-#                     deprecated=False,
-#                 )
-#             )
-#             docs = [
-#                 doc
-#                 for doc in docs
-#                 if doc.energy_per_atom is not None
-#                 and doc.symmetry is not None
-#                 and doc.symmetry.number is not None
-#             ]
-#             if not docs:
-#                 raise RuntimeError(f"No MP summary docs found for pure element '{el}'.")
-
-#             ground = min(
-#                 docs,
-#                 key=lambda doc: (
-#                     float(doc.energy_above_hull if doc.energy_above_hull is not None else 1e9),
-#                     float(doc.energy_per_atom),
-#                 ),
-#             )
-#             bcc_docs = [doc for doc in docs if int(doc.symmetry.number) == 229]
-#             if not bcc_docs:
-#                 raise RuntimeError(f"No BCC (spacegroup 229) MP entry found for pure element '{el}'.")
-#             bcc = min(bcc_docs, key=lambda doc: float(doc.energy_per_atom))
-
-#             delta_e_ev = float(bcc.energy_per_atom) - float(ground.energy_per_atom)
-#             refs[el] = {
-#                 "source": "mp-query",
-#                 "ground_material_id": str(ground.material_id),
-#                 "ground_spacegroup": int(ground.symmetry.number),
-#                 "ground_symbol": str(ground.symmetry.symbol),
-#                 "ground_energy_ev_per_atom": float(ground.energy_per_atom),
-#                 "bcc_material_id": str(bcc.material_id),
-#                 "bcc_spacegroup": int(bcc.symmetry.number),
-#                 "bcc_symbol": str(bcc.symmetry.symbol),
-#                 "bcc_energy_ev_per_atom": float(bcc.energy_per_atom),
-#                 "delta_e_ev": float(delta_e_ev),
-#                 "delta_e_jmol": float(delta_e_ev * EV_PER_ATOM_TO_J_PER_MOL),
-#             }
-#     return refs
-
-
-
-
-def load_local_dft_convex_hull(components: list[str], entries_path: Path):
-    entry_dicts = json.loads(entries_path.read_text(encoding="utf-8"))
-    entries = [ComputedEntry.from_dict(entry) for entry in entry_dicts]
-    if any(len(Composition(comp).elements) > 1 for comp in components):
-        return CompoundPhaseDiagram(
-            terminal_compositions=[Composition(comp) for comp in components],
-            entries=entries,
-        )
-    return PhaseDiagram(elements=[Element(comp) for comp in components], entries=entries)
 
 
 
@@ -959,12 +1328,11 @@ def build_tx_with_solid_solution(
                 phase_labels = [str(p) for p in phases]
                 if "L" not in phase_labels:
                     continue
-                if inv_type == "Misc Gaps": #NOTE: Revisit this in the future to make sure this does not effect true misc gaps
+                if inv_type == "Misc Gaps":
                     non_liq = [p for p in phase_labels if p != "L"]
-                    # SS-L boundaries can appear as "Misc Gaps" due to duplicate-phase simplex handling,
-                    # but they are regular boundaries and should not be shown as invariant tie-lines.
                     if non_liq and len(set(non_liq)) <= 1 and any(p in system.ss_names for p in non_liq):
                         continue
+
                 comps_pct = [float(x) * 100.0 for x in comps]
                 fig.add_trace(
                     go.Scatter(
@@ -993,21 +1361,31 @@ def build_tx_with_solid_solution(
                 textangle=-90,
             )
 
-        ss_color = _phase_color(system, ss_name)
-        ss_ref_endpoints = [
-            (0.0, float(system.component_data[system.components[0]][0]) - 273.15),
-            (100.0, float(system.component_data[system.components[1]][0]) - 273.15),
-        ]
-        fig.add_trace(
-            go.Scatter(
-                x=[point[0] for point in ss_ref_endpoints],
-                y=[point[1] for point in ss_ref_endpoints],
-                mode="markers",
-                marker={"color": ss_color, "size": 8},
-                name=f"{ss_name} endpoint refs",
-                showlegend=False,
-            )
-        )
+        # ss_color = _phase_color(system, ss_name)
+
+        # if all(isinstance(v, list) for v in system.component_data.values()):
+        #     ss_ref_endpoints = [
+        #     (0.0, float(system.component_data[system.components[0]][0]) - 273.15),
+        #     (100.0, float(system.component_data[system.components[1]][0]) - 273.15),
+        # ]
+        # elif all(isinstance(v, dict) for v in system.component_data.values()):
+        #     ss_ref_endpoints = [
+        #     (0.0, float(system.component_data[system.components[0]]['T_fusion']) - 273.15),
+        #     (100.0, float(system.component_data[system.components[1]]['T_fusion']) - 273.15),
+        # ]
+        # else:
+        #     raise ValueError("component_data values must be either a list of dicts (legacy format) or dict of dicts (element-db format).")
+
+        # fig.add_trace(
+        #     go.Scatter(
+        #         x=[point[0] for point in ss_ref_endpoints],
+        #         y=[point[1] for point in ss_ref_endpoints],
+        #         mode="markers",
+        #         marker={"color": ss_color, "size": 8},
+        #         name=f"{ss_name} endpoint refs",
+        #         showlegend=False,
+        #     )
+        # )
 
     fig.add_annotation(
         x=50,
@@ -1097,7 +1475,7 @@ def plot_hsx_with_solid_solution_blocks(
     simplices = hsx_obj.hull()
     df = hsx_obj.df
     points = hsx_obj.points
-    ss_set = set(system.ss_names)
+    # ss_set = set(system.ss_names)
     scatter_colors = [_phase_color(system, str(phase)) for phase in df["Phase"]]
 
     fig = go.Figure()
@@ -1223,12 +1601,11 @@ def build_fit_summary(system: SolidSolutionBinaryLiquid, best_fit: dict) -> dict
         "ss_models": {
             ss_name: {
                 "ref_mode": str(ss_model["ref_mode"]),
-                "omega_ev": float(ss_model["omega_ev"]),
                 "omega_jmol": float(ss_model["omega_jmol"]),
-                "offset_a_ev": float(ss_model["offset_a_ev"]),
-                "offset_b_ev": float(ss_model["offset_b_ev"]),
-                "offset_a_jmol": float(ss_model["offset_a_jmol"]),
-                "offset_b_jmol": float(ss_model["offset_b_jmol"]),
+                "deltaH_a_jmol": float(ss_model["deltaH_a_jmol"]),
+                "deltaH_b_jmol": float(ss_model["deltaH_b_jmol"]),
+                "deltaS_a_jmol_k": float(ss_model["deltaS_a_jmol_k"]),
+                "deltaS_b_jmol_k": float(ss_model["deltaS_b_jmol_k"]),
                 "refs": ss_model["refs"],
             }
             for ss_name, ss_model in system.ss_models.items()
@@ -1240,20 +1617,21 @@ def main():
 
     # elts = ["Zr", "Hf", "Nb", "W", "Al"]
     # system_combos = [sorted(elts[i], elts[j]) for i in range(len(elts)) for j in range(i + 1, len(elts))]
-
-    # sys_name = "Hf-Nb"
-    # sys_name = "Al-Zr"
-    # sys_name = "W-Zr"
-    sys_name = "Hf-W"
+   
+    # ref modes: omegas-legacy, binary-cache, element-db
+    sys_name = "Nb-Zr"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
+    # system.update_phase_points()
+    # plot_hsx_with_solid_solution_blocks(system).show()
 
     print("Solid-solution models:")
     for ss_name, ss_model in system.ss_models.items():
         print(
             f"  phase={ss_name}",
-            f"omega={ss_model['omega_ev']:.6f} eV/atom",
-            f"offsets=({ss_model['offset_a_ev']:.6f}, {ss_model['offset_b_ev']:.6f}) eV/atom",
+            f"omega={ss_model['omega_jmol']:.6f} J/mol",
+            f"deltaH=({ss_model['deltaH_a_jmol']:.6f}, {ss_model['deltaH_b_jmol']:.6f}) J/mol",
+            f"deltaS=({ss_model['deltaS_a_jmol_k']:.6f}, {ss_model['deltaS_b_jmol_k']:.6f}) J/(mol*K)",
             f"ref_mode={ss_model['ref_mode']}",
         )
         print("  Pure-element references:")
@@ -1264,9 +1642,12 @@ def main():
                 f"E={ref['ground_energy_ev_per_atom']:.6f} eV/atom | "
                 f"SS-ref={ref['material_id']} SG={ref['spacegroup']} {ref['symbol']} "
                 f"E={ref['energy_ev_per_atom']:.6f} eV/atom | "
-                f"delta={ref['delta_e_ev']:.6f} eV/atom"
+                f"deltaH={ref['delta_h_jmol']:.6f} J/mol | "
+                f"deltaS={ref['delta_s_jmol_k']:.6f} J/(mol*K)"
             )
         print()
+
+    # plot_hsx_with_solid_solution_blocks(system).show()
 
     fit_results = system.fit_parameters(
         verbose=True,
@@ -1295,22 +1676,19 @@ def main():
     fit_fig = build_tx_with_solid_solution(
         system
     )
-    # fit_path = cfg.project_root / "figures" / f"{sys_name}_fit_plus_liq.html"
-    # fit_fig.write_html(str(fit_path), include_plotlyjs="cdn")
-    # print(f"Saved plot: {fit_path}")
     fit_fig.show()
-
-    tx_scatter_fig = build_tx_scatter_with_solid_solution(system)
-    tx_scatter_fig.show()
-
-    hsx_debug_fig = plot_hsx_with_solid_solution_blocks(system)
-    hsx_debug_fig.show()
 
     t_vals_k = auto_chg_temps_k(system)
     chg_fig = build_chg_with_solid_solution(system, t_vals_k=t_vals_k)
     chg_fig.show()
     chg_fig_hidden = build_chg_with_solid_solution(system, t_vals_k=t_vals_k, hide_unstable_solution_curves=True)
     chg_fig_hidden.show()
+
+
+    # fit_path = cfg.project_root / "figures" / f"{sys_name}_fit_plus_liq.html"
+    # fit_fig.write_html(str(fit_path), include_plotlyjs="cdn")
+    # print(f"Saved plot: {fit_path}")
+
     # chg_path = cfg.project_root / "figures" / f"{sys_name}_chg_with_ss.html"
     # chg_fig.write_html(str(chg_path), include_plotlyjs="cdn")
     # print(f"Saved plot: {chg_path}")
