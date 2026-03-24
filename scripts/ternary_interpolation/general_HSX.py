@@ -21,6 +21,9 @@ from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay
 from copy import deepcopy
+from pathlib import Path
+
+WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
 from gliquid.binary import (

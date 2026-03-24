@@ -1619,7 +1619,10 @@ def main():
     # system_combos = [sorted(elts[i], elts[j]) for i in range(len(elts)) for j in range(i + 1, len(elts))]
    
     # ref modes: omegas-legacy, binary-cache, element-db
-    sys_name = "Nb-Zr"
+    # sys_name = "Nb-Zr"
+    # sys_name = "Hf-W"
+    # sys_name = "Al-Zr"
+    sys_name = "Te-Zr"
     system = SolidSolutionBinaryLiquid.from_cache(sys_name, pd_ind=0, ref_mode='omegas-legacy', param_format='comb-exp',
                                                   omegas_path=cfg.data_dir / "omegas_hcp.json")
     # system.update_phase_points()
@@ -1677,6 +1680,12 @@ def main():
         system
     )
     fit_fig.show()
+
+    tx_scatter_fig = build_tx_scatter_with_solid_solution(system)
+    tx_scatter_fig.show()
+
+    hsx_debug_fig = plot_hsx_with_solid_solution_blocks(system)
+    hsx_debug_fig.show()
 
     t_vals_k = auto_chg_temps_k(system)
     chg_fig = build_chg_with_solid_solution(system, t_vals_k=t_vals_k)

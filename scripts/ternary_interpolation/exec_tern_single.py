@@ -18,9 +18,9 @@ def plot_ternary_system():
     # tern_sys = ["Er", "Cu", "Ge"]
     # tern_sys = ["Ce", "Zn", "In"]
     # tern_sys = ["Tm", "Cu", "Ge"]
-    tern_sys = ["Fe", "Ce", "Si"]
+    # tern_sys = ["Fe", "Ce", "Si"]
     # tern_sys = ["Bi", "Cd", "Sn"]
-    # tern_sys = ["Zr", "Te", "Bi"]
+    tern_sys = ["Zr", "Bi", "Te"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
@@ -117,8 +117,8 @@ def plot_ternary_system():
     )
 
     bin_fig_list = plotter.bin_fig_list
-    # for i, bin_fig in enumerate(bin_fig_list):
-    #     bin_fig.show()
+    for i, bin_fig in enumerate(bin_fig_list):
+        bin_fig.show()
 
     # print(plotter.equil_df_list)
 

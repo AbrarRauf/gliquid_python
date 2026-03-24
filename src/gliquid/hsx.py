@@ -18,7 +18,7 @@ from collections import defaultdict
 class HSX:
     """Handles enthalpy (H), entropy (S), and composition (X) transformations for TX phase diagrams."""
 
-    def __init__(self, data_dict: dict, conds: list[float], use_filter_2=True):
+    def __init__(self, data_dict: dict, conds: list[float], use_filter_2=False):
         """Initializes the HSX instance with provided phase data and conditions."""
         self.phases = data_dict['phases']
         self.comps = data_dict['comps']
@@ -121,6 +121,7 @@ class HSX:
         ]
         
         self.df_tx = pd.DataFrame(data, columns=['x', 't', 'label', 'color'])
+        
         phase_remap = defaultdict(list)
         for entry in data:
             phase_remap[entry[2]].append([entry[0], entry[1]])
@@ -128,13 +129,11 @@ class HSX:
         return self.df_tx, self.final_phases, np.array(valid_simplices), temps
 
     
-    def plot_tx_scatter(self):
+    def plot_tx_scatter(self) -> go.Figure:
         # self.df_tx = self.compute_tx()[0]   
         # convert all temps to Celsius
         self.df_tx['t'] = self.df_tx['t'] - 273.15
 
-        # Option 2: Save the DataFrame to an Excel file
-        self.df_tx.to_excel("tx_data.xlsx", index=False) # saves to an excel file in the same directory
         # Create a scatter plot using Plotly Express
         fig = px.scatter(self.df_tx, x='x', y='t', color='label',
                          color_discrete_map=self.phase_color_remap,
@@ -175,9 +174,9 @@ class HSX:
         )
 
         # Show the plot
-        fig.show()
+        return fig
 
-    def plot_hsx(self):
+    def plot_hsx(self) -> go.Figure:
         # Create a figure
         self.simplices = self.hull()
         fig = go.Figure()
@@ -339,15 +338,20 @@ class HSX:
                     new_tx.append([temp, comp, phase])
         
         temp_df_tx = [[x, t, phase[j], self.color_map.get(phase[j])] 
-                      for t, comp, phase in new_tx for j, x in enumerate(comp)]
+                  for t, comp, phase in new_tx for j, x in enumerate(comp)]
         new_df_tx = pd.DataFrame(temp_df_tx, columns=['x', 't', 'label', 'color'])
         new_df_tx['x'] *= 100
-        
+
         liq_df = self.df_tx[self.df_tx['label'] == 'L'].copy()
         liq_df['x'] *= 100
         liq_df.sort_values(by=['x', 't'], inplace=True)
         liq_df.drop_duplicates(subset='x', keep='first', inplace=True)
-        solid_df = new_df_tx[new_df_tx['label'] != 'L']
+
+        # Use raw compute_tx scatter points for solids so polymorphs at identical
+        # composition are preserved (combined_list/new_df_tx can collapse them).
+        solid_df = self.df_tx[self.df_tx['label'] != 'L'].copy()
+        solid_df['x'] *= 100
+        solid_df.drop_duplicates(subset=['x', 't', 'label'], keep='first', inplace=True)
 
         lhs_tm, rhs_tm = liq_df.iloc[0]['t'], liq_df.iloc[-1]['t']
         max_liq, min_liq = liq_df['t'].max(), liq_df['t'].min()
@@ -382,6 +386,39 @@ class HSX:
             if phase_decomp_temp - 0.1 * (self.conds[1] - self.conds[0]) < self.conds[0]:
                 self.conds[0] = max(-273.15, phase_decomp_temp - 0.1 * (self.conds[1] - self.conds[0]))
 
+        # Build per-phase lower-extension limits. For polymorphs at the same composition,
+        # only the lowest-temperature phase is extended to plot bottom; upper polymorphs
+        # are extended down only to the top of the lower polymorph to avoid full overlap.
+        phase_rows = []
+        comp_groups = defaultdict(list)
+        for phase in solid_phases:
+            phase_df = solid_df[solid_df['label'] == phase]
+            if phase_df.empty:
+                continue
+            solid_comp = float(phase_df['x'].iloc[0])
+            t_min = float(phase_df['t'].min())
+            t_max = float(phase_df['t'].max())
+            phase_rows.append((phase, phase_df, solid_comp))
+            comp_groups[round(solid_comp, 6)].append({
+                'phase': phase,
+                't_min': t_min,
+                't_max': t_max,
+            })
+
+        phase_low_ext = {}
+        for group in comp_groups.values():
+            ordered = sorted(group, key=lambda d: (d['t_min'], d['t_max']))
+            prev_top = None
+            for idx, entry in enumerate(ordered):
+                if idx == 0:
+                    low_ext = -273.15
+                else:
+                    low_ext = prev_top if prev_top is not None else -273.15
+                    # Never extend above where this phase already starts.
+                    low_ext = min(low_ext, entry['t_min'])
+                phase_low_ext[entry['phase']] = low_ext
+                prev_top = entry['t_max']
+
         solid_comp_list = []
         idx_tracker = 0
         # Collect polymorph phase names for separate labeling
@@ -390,17 +427,14 @@ class HSX:
             polymorph_names = {pt['name'] for pt in polymorph_transitions}
             polymorph_names |= {pt.get('ground_state_name', '') for pt in polymorph_transitions}
 
-        for phase in solid_phases:
-            phase_df = solid_df[solid_df['label'] == phase]
-            if phase_df.empty:
-                continue
-
-            solid_comp = phase_df['x'].values
-            solid_comp = solid_comp[0] 
+        print("DEBUGTX")
+        print(solid_phases)
+        for phase, phase_df, solid_comp in phase_rows:
             solid_comp_list.append(solid_comp)
 
+            low_ext_temp = phase_low_ext.get(phase, -273.15)
             new_row_df = pd.DataFrame(
-                [{'x': solid_comp, 't': -273.15, 'label': phase, 'color': self.color_map.get(phase)}],
+                [{'x': solid_comp, 't': low_ext_temp, 'label': phase, 'color': self.color_map.get(phase)}],
                   columns=phase_df.columns)
             phase_df = pd.concat([phase_df, new_row_df], ignore_index=True)
             line = px.line(phase_df, x='x', y='t', color='label', color_discrete_map=self.phase_color_remap)
@@ -409,11 +443,24 @@ class HSX:
 
             # Skip label here for polymorphs — they are labeled separately below
             if phase not in polymorph_names:
-                x_offset = 1.5 if solid_comp < 5 or (idx_tracker > 0 and solid_comp_list[idx_tracker] - solid_comp_list[idx_tracker - 1] < 5) else -2.5
+                comp_key = round(float(solid_comp), 6)
+                is_stacked_comp = len(comp_groups.get(comp_key, [])) > 1
+                # Keep labels for phases at the same composition on one side:
+                # right of left-terminal phases (x ~ 0), left of right-terminal phases (x ~ 100).
+                if is_stacked_comp:
+                    x_offset = 1.5 if solid_comp <= 50 else -2.5
+                else:
+                    x_offset = 1.5 if solid_comp < 5 or (idx_tracker > 0 and solid_comp_list[idx_tracker] - solid_comp_list[idx_tracker - 1] < 5) else -2.5
+                if is_stacked_comp:
+                    label_y = 0.5 * (low_ext_temp + float(phase_df['t'].max()))
+                    label_anchor = 'middle'
+                else:
+                    label_y = self.conds[0]
+                    label_anchor = 'bottom'
                 fig.add_annotation(
                     x=solid_comp + x_offset,
-                    y=self.conds[0],
-                    yanchor='bottom',
+                    y=label_y,
+                    yanchor=label_anchor,
                     text=phase,
                     showarrow=False,
                     textangle=-90,

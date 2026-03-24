@@ -21,9 +21,9 @@ from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay
 from copy import deepcopy
-from auth import key as MAPI_KEY
+from auth import mpapi_key as MAPI_KEY
 
-from gliquid.config import fusion_enthalpies_file, fusion_temps_file
+import gliquid.config as config
 from gliquid.binary import (
     BinaryLiquid,
     linear_expr, exponential_expr, combined_expr)
@@ -31,6 +31,9 @@ from gliquid.binary import (
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
 from extensive_hull_main import gliq_lowerhull3
 import random
+
+_phase_transitions_raw = json.load(open(config.phase_transitions_file))
+phase_transitions = _phase_transitions_raw.get('elements', {})
 
 mpr = MPRester(MAPI_KEY)
 
@@ -233,12 +236,43 @@ class ternary_interpolation:
     
     def init_ref_data(self):
         # initialize reference data for fusion enthalpies and entropies
-        fusion_enthalpy = pd.read_json(os.path.join(fusion_enthalpies_file), typ='series')
-        fusion_temp = pd.read_json(os.path.join(fusion_temps_file), typ='series')
-        tern_enthalpy = fusion_enthalpy[self.tern_sys].values
-        tern_temp = fusion_temp[self.tern_sys]
-        tern_entropy = tern_enthalpy/tern_temp
+        liquid_enthalpies = {}
+        liquid_entropies = {}
+        melt_temps = {}
+        boiling_temps = {}
+        element_polymorphs = {}
+
+        for _symbol, _elem_data in phase_transitions.items():
+            _solids = []
+            for _phase in _elem_data.get('phases', []):
+                if _phase['phase_type'] == 'solid':
+                    if _phase['transition_temperature_K'] >= 0:  # Exclude ground state #TODO: verify that this works in main code
+                        _solids.append(_phase)
+                elif _phase['phase_type'] == 'liquid':
+                    _h = _phase.get('enthalpy_J_per_mol')
+                    _s = _phase.get('entropy_J_per_mol_K')
+                    _t = _phase.get('transition_temperature_K')
+                    if _h is not None:
+                        liquid_enthalpies[_symbol] = _h
+                    if _s is not None:
+                        liquid_entropies[_symbol] = _s
+                    if _t is not None:
+                        melt_temps[_symbol] = _t
+                elif _phase['phase_type'] == 'gas':
+                    _t = _phase.get('transition_temperature_K')
+                    if _t is not None:
+                        boiling_temps[_symbol] = _t
+            element_polymorphs[_symbol] = _solids
+
+
+        tern_enthalpy = np.array([liquid_enthalpies.get(el, 0) for el in self.tern_sys])
+        tern_temp = np.array([melt_temps.get(el, 0) for el in self.tern_sys])
+        tern_entropy = np.array([liquid_entropies.get(el, 0) for el in self.tern_sys])
+        # tern_entropy = tern_enthalpy/tern_temp
+
         self.ref_data = {'H': tern_enthalpy, 'S': tern_entropy, 'T': tern_temp}
+        print(self.ref_data)
+        
 
 
     def ternary_interpolation(self): # maybe there's a better name for this than the same as the class name?
@@ -401,10 +435,22 @@ class ternary_interpolation:
             sys = BinaryLiquid.from_cache(input=sys_name, params=params, param_format=self.param_format,)
             data = sys.update_phase_points()
             fit_type = self.fit_or_pred[sys_name] 
+
+            print(sys.hsx.df_tx)
+            print(sys.hsx.df)
+            print(sys.hsx.df_tx[sys.hsx.df_tx['label'].str.contains('-Zr')])
+            print(sys.hsx.df[sys.hsx.df['Phase'].str.contains('-Zr')])
+            if "Zr" in sys_name:
+                # exit()
+                pass
             if fit_type == 'fit':
                 figr = sys.hsx.plot_tx(digitized_liquidus=sys.digitized_liq)
+                # figr = sys.hsx.plot_tx_scatter()
+                # figr = sys.hsx.plot_hsx()
             else:
                 figr = sys.hsx.plot_tx(pred=True)
+                # figr = sys.hsx.plot_tx_scatter()
+                # figr = sys.hsx.plot_hsx()
             bin_fig_list.append(figr)
             
 
@@ -454,8 +500,7 @@ class ternary_gtx_plotter(ternary_interpolation):
         self.color_map = dict(zip(solid_phases, color_array))
         self.color_map['L'] = 'cornflowerblue'
 
-        fusion_temp = pd.read_json(os.path.join(fusion_temps_file), typ='series')
-        tern_temp = fusion_temp[self.tern_sys].values 
+        tern_temp = self.ref_data['T']
         # max_temp = round(np.max(tern_temp))
         max_temp = round(np.max(tern_temp) + 200)
         min_temp = round(np.min(tern_temp))

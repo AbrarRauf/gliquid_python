@@ -1,7 +1,9 @@
 import json
 from general_HSX import ThermoExprBuilder
 from gliquid.config import fusion_enthalpies_file, fusion_temps_file
+from pathlib import Path
 
+WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 
 # Example usage: build expressions for a quaternary system using the class-based API
 with open(fusion_enthalpies_file) as f:
