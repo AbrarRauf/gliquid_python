@@ -904,9 +904,9 @@ def gliq_lowerhull3_old(points, vertical_simplices = False):
     return arr_lowerhull
 
 def gliq_lowerhull3(points, vertical_simplices = False):
-    # Function to calculate the general lower convex hull of an N-dimensional Xi-S-H space
-    # Input: points = array of coordinates of the points in the Xi-S-H space
-    # Output: simplices = array of simplices that form the lower convex hull of the Xi-S-H space
+    # Function to calculate the general lower convex hull of an N-dimensional Xi-H space
+    # Input: points = array of coordinates of the points in the Xi-H space
+    # Output: simplices = array of simplices that form the lower convex hull of the Xi-H space
     # Uses vectorized operations for efficiency (avoids iterative row comparisons)
     
     n_real = len(points)  # Track number of real points for efficient filtering

@@ -19,7 +19,7 @@ from mp_api.client import MPRester
 from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
-from scipy.spatial import Delaunay
+from scipy.spatial import Delaunay, QhullError, cKDTree
 from copy import deepcopy
 from pathlib import Path
 
@@ -45,7 +45,7 @@ EV_PER_ATOM_TO_J_PER_MOL = 96485.33212
 # SYMBOLIC VARIABLE MANAGEMENT
 # ==============================================================================
 
-from typing import Dict, Tuple, Optional, Callable
+from typing import Dict, Tuple, Optional, Callable, Any
 from itertools import combinations
 
 
@@ -469,7 +469,7 @@ class GeneralInterpolation:
         output_dir: Directory for caching MP data and outputs.
         binary_pairs: List of binary pair strings (e.g., ["Al-Cu", "Al-Mg"]).
         gtx_data: DataFrame containing the final GTX dataset.
-        
+        grid_delta: Composition grid spacing (default 0.025).
     Example:
         >>> interp = GeneralInterpolation(
         ...     elements=['Al', 'Cu', 'Si', 'Mg'],
@@ -488,12 +488,13 @@ class GeneralInterpolation:
         self,
         elements: List[str],
         output_dir: str,
-        grid_delta: float = 0.05,
+        grid_delta: float = 0.025,
         temp_delta_k: float = 5.0,
         temp_bounds_offset_k: float = 500.0,
         temp_bounds_k: Optional[Tuple[float, float]] = None,
         param_format: str = 'linear',
         interp_scheme: str = 'linear',
+        include_polymorphs: bool = True,
         tau: float = 8000,
         mp_api_key: Optional[str] = None
     ):
@@ -503,12 +504,15 @@ class GeneralInterpolation:
         Args:
             elements: List of element symbols (e.g., ['Al', 'Cu', 'Si', 'Mg']).
             output_dir: Directory for caching data and saving outputs.
-            grid_delta: Composition grid spacing (default 0.05).
+            grid_delta: Composition grid spacing (default 0.025).
             temp_delta_k: Temperature grid spacing in Kelvin (default 5 K).
             temp_bounds_offset_k: Default extension from fusion extrema in K (default 500 K).
             temp_bounds_k: Optional explicit temperature bounds (Tmin, Tmax) in Kelvin.
             param_format: L parameter format ('linear', 'exponential', 'combined').
             interp_scheme: Interpolation scheme ('linear', 'muggianu', 'kohler').
+            include_polymorphs: If True, include elemental polymorph solid
+                references from phase_transitions.json and skip duplicate MP
+                pure-element placeholders; if False, keep MP-only references.
             tau: exp constant for combined format (default 8000).
             mp_api_key: Materials Project API key (uses default if None).
         """
@@ -531,6 +535,7 @@ class GeneralInterpolation:
         self.temp_bounds_k = temp_bounds_k
         self.param_format = param_format
         self.interp_scheme = interp_scheme
+        self.include_polymorphs = bool(include_polymorphs)
         self.tau = tau
         
         # Generate binary pairs as element strings (sorted alphabetically)
@@ -571,6 +576,7 @@ class GeneralInterpolation:
         print(f"Initialized GeneralInterpolation for system: {'-'.join(self.elements)}")
         print(f"  Components: {self.n_components}")
         print(f"  Binary pairs: {self.binary_pairs}")
+        print(f"  Include polymorph references: {self.include_polymorphs}")
     
     @property
     def mpr(self) -> MPRester:
@@ -684,6 +690,29 @@ class GeneralInterpolation:
         poly_df = pd.DataFrame(rows)
         poly_df = poly_df.drop_duplicates(subset=self.get_composition_columns() + ['Phase Name', 'H', 'S'])
         return poly_df.reset_index(drop=True)
+
+    def _element_indices_with_polymorph_refs(self) -> set[int]:
+        """Return canonical element indices with at least one valid solid polymorph ref."""
+        elements_map = self._load_phase_transition_elements()
+        indices: set[int] = set()
+
+        for el_idx, el in enumerate(self.elements):
+            elem_data = elements_map.get(el, {})
+            for phase in elem_data.get('phases', []):
+                if phase.get('phase_type') != 'solid':
+                    continue
+                t_trans = phase.get('transition_temperature_K')
+                if t_trans is None or float(t_trans) < 0:
+                    continue
+                h_val = phase.get('enthalpy_J_per_mol')
+                s_val = phase.get('entropy_J_per_mol_K')
+                phase_name = phase.get('common_name') or phase.get('phase_name')
+                if h_val is None or s_val is None or not phase_name:
+                    continue
+                indices.add(el_idx)
+                break
+
+        return indices
     
     def set_binary_params(
         self,
@@ -1002,9 +1031,12 @@ class GeneralInterpolation:
         phase_names = []
         compositions_list = []
         formation_energies = []
+        skipped_mp_elementals = 0
         
         element_objects = [Element(el) for el in self.elements]
         
+        polymorph_element_indices = self._element_indices_with_polymorph_refs() if self.include_polymorphs else set()
+
         for entry in stable_entries:
             formula = entry.composition.reduced_formula
             comp = Composition(formula)
@@ -1012,7 +1044,6 @@ class GeneralInterpolation:
             
             # Formation energy in J/mol (converted from eV/atom).
             form_energy = phase_diagram.get_form_energy_per_atom(entry) * EV_PER_ATOM_TO_J_PER_MOL
-            formation_energies.append(form_energy)
             
             # Get atomic fractions for each element
             atom_fracs = []
@@ -1021,14 +1052,25 @@ class GeneralInterpolation:
                     atom_fracs.append(comp.get_atomic_fraction(element))
                 else:
                     atom_fracs.append(0.0)
+
+            # Mirror binary.py endpoint handling: if explicit elemental
+            # polymorph references exist, skip MP pure-element placeholders.
+            nz_idx = [i for i, v in enumerate(atom_fracs) if v > 1e-10]
+            if len(nz_idx) == 1 and nz_idx[0] in polymorph_element_indices:
+                skipped_mp_elementals += 1
+                continue
             
             compositions_list.append(atom_fracs)
             phase_names.append(formula)
+            formation_energies.append(form_energy)
         
-        compositions_arr = np.array(compositions_list)
+        if compositions_list:
+            compositions_arr = np.array(compositions_list, dtype=float)
+        else:
+            compositions_arr = np.empty((0, self.n_components), dtype=float)
         
         # Track deepest formation energy
-        self.metadata['deepest_formation_energy'] = min(formation_energies)
+        self.metadata['deepest_formation_energy'] = min(formation_energies) if formation_energies else None
         
         # Build DataFrame using independent composition convention:
         # x0.. map to canonical components E1..E{n-1}.
@@ -1046,14 +1088,19 @@ class GeneralInterpolation:
         df = df.reset_index(drop=True)
         
         # Add elemental polymorph references (same composition, different G(T)).
-        poly_df = self._build_elemental_polymorph_df()
+        if self.include_polymorphs:
+            poly_df = self._build_elemental_polymorph_df()
+        else:
+            poly_df = pd.DataFrame(columns=self.get_composition_columns() + ['H', 'S', 'Phase Name'])
         if not poly_df.empty:
             df = pd.concat([df, poly_df], ignore_index=True)
             df = df.drop_duplicates(subset=self.get_composition_columns() + ['Phase Name', 'H', 'S'])
             df = df.reset_index(drop=True)
 
         self.solid_hsx = df
+        self.metadata['include_polymorphs'] = bool(self.include_polymorphs)
         self.metadata['n_elemental_polymorph_refs'] = int(len(poly_df))
+        self.metadata['n_mp_elemental_entries_skipped_for_polymorphs'] = int(skipped_mp_elementals)
         return self.solid_hsx
 
     def compute_solid_gtx(self, temp_grid_k: Optional[np.ndarray] = None) -> pd.DataFrame:
@@ -1190,6 +1237,7 @@ class GeneralInterpolation:
             'grid_delta': self.grid_delta,
             'param_format': self.param_format,
             'interp_scheme': self.interp_scheme,
+            'include_polymorphs': self.include_polymorphs,
             'fusion_data_loaded': self.fusion_data is not None,
             'binary_params_set': self.binary_L_params is not None,
             'n_liquid_points': len(self.liquid_gtx) if self.liquid_gtx is not None else 0,
@@ -1197,6 +1245,392 @@ class GeneralInterpolation:
             'total_hsx_points': len(self.hsx_data) if self.hsx_data is not None else 0,
             'temp_delta_k': self.temp_delta_k,
             **self.metadata
+        }
+
+
+class GeneralEquilibrium:
+    """General lower-hull equilibrium solver over GTX data.
+
+    This class consumes GTX rows (x*, T, G, phase label), solves lower hull per
+    temperature slice, emits simplex-linked equilibrium rows, and provides a
+    cluster-aware lowest-liquidus invariant utility.
+    """
+
+    def __init__(
+        self,
+        gtx_data: pd.DataFrame,
+        composition_cols: Optional[List[str]] = None,
+        temp_col: str = 'T_K',
+        phase_col: str = 'Phase Name',
+        g_col: str = 'G',
+        liquid_aliases: Optional[List[str]] = None,
+        cluster_comp_threshold: Optional[float] = None,
+        temp_step_k: Optional[float] = None,
+    ):
+        self.gtx_data = gtx_data.copy()
+        self.temp_col = temp_col
+        self.phase_col = phase_col
+        self.g_col = g_col
+        self.composition_cols = composition_cols or self._infer_composition_columns(self.gtx_data)
+        self.liquid_aliases = {s.strip().upper() for s in (liquid_aliases or ['L', 'LIQUID'])}
+
+        self.cluster_comp_threshold = cluster_comp_threshold
+        self.temp_step_k = temp_step_k
+
+        self.equilibrium_df: Optional[pd.DataFrame] = None
+        self.simplex_df: Optional[pd.DataFrame] = None
+
+        self._validate_input()
+
+    @staticmethod
+    def _infer_composition_columns(df: pd.DataFrame) -> List[str]:
+        cols = [c for c in df.columns if c.startswith('x') and c[1:].isdigit()]
+        if not cols:
+            raise ValueError("Could not infer composition columns. Expected columns like x0, x1, ...")
+        return sorted(cols, key=lambda c: int(c[1:]))
+
+    def _validate_input(self):
+        required = set(self.composition_cols + [self.temp_col, self.phase_col, self.g_col])
+        missing = required - set(self.gtx_data.columns)
+        if missing:
+            raise ValueError(f"Missing required GTX columns for equilibrium solve: {sorted(missing)}")
+
+        if self.gtx_data.empty:
+            raise ValueError("GTX dataframe is empty.")
+
+        if not np.isfinite(self.gtx_data[self.g_col].to_numpy(dtype=float)).all():
+            raise ValueError("GTX dataframe contains non-finite G values.")
+
+        if not np.isfinite(self.gtx_data[self.temp_col].to_numpy(dtype=float)).all():
+            raise ValueError("GTX dataframe contains non-finite temperature values.")
+
+        n_vertices_required = len(self.composition_cols) + 1
+        temp_sizes = self.gtx_data.groupby(self.temp_col, sort=True).size()
+        if (temp_sizes < n_vertices_required).any():
+            bad_t = temp_sizes[temp_sizes < n_vertices_required].index.tolist()[:5]
+            raise ValueError(
+                f"Temperature slices must contain at least {n_vertices_required} points; "
+                f"insufficient slices include: {bad_t}"
+            )
+
+    def _is_liquid_label(self, phase_name: Any) -> bool:
+        return str(phase_name).strip().upper() in self.liquid_aliases
+
+    def _infer_temperature_step(self) -> float:
+        if self.temp_step_k is not None:
+            return float(self.temp_step_k)
+
+        temps = np.sort(self.gtx_data[self.temp_col].dropna().unique().astype(float))
+        if len(temps) < 2:
+            return 0.0
+        diffs = np.diff(temps)
+        diffs = diffs[diffs > 1e-12]
+        return float(np.min(diffs)) if len(diffs) else 0.0
+
+    def _infer_grid_delta(self) -> float:
+        deltas = []
+        for col in self.composition_cols:
+            vals = np.sort(self.gtx_data[col].dropna().unique().astype(float))
+            if len(vals) < 2:
+                continue
+            dv = np.diff(vals)
+            dv = dv[dv > 1e-12]
+            if len(dv):
+                deltas.append(float(np.min(dv)))
+        return min(deltas) if deltas else 0.0
+
+    @staticmethod
+    def _connected_components(points: np.ndarray, threshold: float) -> List[List[int]]:
+        if len(points) == 0:
+            return []
+
+        threshold = max(float(threshold), 0.0)
+        if threshold == 0.0:
+            return [[i] for i in range(len(points))]
+
+        # Use KD-tree neighborhood queries to avoid dense O(N^2) memory.
+        tree = cKDTree(points)
+        neighbors = tree.query_ball_point(points, r=threshold + 1e-12)
+
+        seen = np.zeros(len(points), dtype=bool)
+        components: List[List[int]] = []
+        for i in range(len(points)):
+            if seen[i]:
+                continue
+            stack = [i]
+            seen[i] = True
+            comp = []
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                nbrs = neighbors[cur]
+                for n in nbrs:
+                    if not seen[n]:
+                        seen[n] = True
+                        stack.append(n)
+            components.append(sorted(comp))
+        return components
+
+    def solve(self, vertical_simplices: bool = True) -> pd.DataFrame:
+        """Solve lower-hull equilibrium for each temperature slice."""
+        work = self.gtx_data.reset_index(drop=True).copy()
+        work['source_row_id'] = np.arange(len(work), dtype=int)
+
+        eq_rows = []
+        simplex_rows = []
+        simplex_counter = 0
+
+        for temp_val, df_t in work.groupby(self.temp_col, sort=True):
+            df_t = df_t.reset_index(drop=True)
+            points = df_t[self.composition_cols + [self.g_col]].to_numpy(dtype=float)
+
+            try:
+                simplices = gliq_lowerhull3(points, vertical_simplices=vertical_simplices)
+            except QhullError:
+                continue
+
+            if simplices is None or len(simplices) == 0:
+                continue
+
+            for simplex in simplices:
+                simplex_id = simplex_counter
+                simplex_counter += 1
+
+                local_idx = [int(i) for i in np.asarray(simplex).tolist()]
+                simplex_vertices = df_t.iloc[local_idx].copy()
+                source_ids = simplex_vertices['source_row_id'].astype(int).tolist()
+                phase_names = simplex_vertices[self.phase_col].astype(str).tolist()
+
+                simplex_rows.append({
+                    'simplex_id': simplex_id,
+                    self.temp_col: float(temp_val),
+                    'vertex_count': int(len(local_idx)),
+                    'vertex_local_indices': local_idx,
+                    'vertex_source_row_ids': source_ids,
+                    'vertex_phases': phase_names,
+                })
+
+                for _, row in simplex_vertices.iterrows():
+                    eq_row = {
+                        col: float(row[col]) for col in self.composition_cols
+                    }
+                    eq_row[self.temp_col] = float(row[self.temp_col])
+                    if 'T_C' in row.index:
+                        eq_row['T_C'] = float(row['T_C'])
+                    elif self.temp_col == 'T_K':
+                        eq_row['T_C'] = float(row[self.temp_col] - 273.15)
+                    else:
+                        eq_row['T_C'] = np.nan
+                    eq_row['G'] = float(row[self.g_col])
+                    eq_row['Phase'] = str(row[self.phase_col])
+                    eq_row['simplex_id'] = int(simplex_id)
+                    eq_row['source_row_id'] = int(row['source_row_id'])
+                    eq_rows.append(eq_row)
+
+        self.equilibrium_df = pd.DataFrame(eq_rows)
+        self.simplex_df = pd.DataFrame(simplex_rows)
+        return self.equilibrium_df
+
+    def _coexisting_solids_for_simplex_ids(self, simplex_ids: List[int]) -> List[str]:
+        if self.equilibrium_df is None or self.equilibrium_df.empty:
+            return []
+        mask = self.equilibrium_df['simplex_id'].isin(simplex_ids)
+        phases = self.equilibrium_df.loc[mask, 'Phase'].astype(str).tolist()
+        solids = sorted({p for p in phases if not self._is_liquid_label(p)})
+        return solids
+
+    def get_lowest_liquidus_clusters(
+        self,
+        temp_window_factor: float = 2.0,
+        comp_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Find cluster-aware lowest-liquidus candidates and simplex-linked solids."""
+        if self.equilibrium_df is None:
+            self.solve()
+
+        if self.equilibrium_df is None or self.equilibrium_df.empty:
+            return {
+                'tmin': None,
+                'cluster_records': pd.DataFrame(),
+                'coexisting_solids_union': [],
+            }
+
+        liq_mask = self.equilibrium_df['Phase'].apply(self._is_liquid_label)
+        liq_df = self.equilibrium_df.loc[liq_mask].copy()
+        if liq_df.empty:
+            return {
+                'tmin': None,
+                'cluster_records': pd.DataFrame(),
+                'coexisting_solids_union': [],
+            }
+
+        tmin = float(liq_df[self.temp_col].min())
+        dt = self._infer_temperature_step()
+        window = float(temp_window_factor) * float(dt)
+        tmax = tmin + window
+        candidates = liq_df[liq_df[self.temp_col] <= tmax + 1e-12].copy()
+
+        # Keep one representative per composition in the near-minimum window,
+        # preferring the lowest-T and then lowest-G row.
+        if not candidates.empty:
+            candidates = (
+                candidates
+                .sort_values(by=[self.temp_col, 'G'] + self.composition_cols, ascending=True)
+                .drop_duplicates(subset=self.composition_cols, keep='first')
+                .reset_index(drop=True)
+            )
+
+        if candidates.empty:
+            return {
+                'tmin': tmin,
+                'cluster_records': pd.DataFrame(),
+                'coexisting_solids_union': [],
+            }
+
+        if comp_threshold is None:
+            comp_threshold = self.cluster_comp_threshold
+        if comp_threshold is None:
+            grid_delta = self._infer_grid_delta()
+            comp_threshold = grid_delta if grid_delta > 0 else 0.0
+
+        comp_points = candidates[self.composition_cols].to_numpy(dtype=float)
+        components = self._connected_components(comp_points, threshold=float(comp_threshold))
+
+        records = []
+        union_solids = set()
+
+        for cluster_id, component in enumerate(components):
+            cluster_df = candidates.iloc[component].copy()
+            cluster_df = cluster_df.sort_values(
+                by=[self.temp_col, 'G'] + self.composition_cols,
+                ascending=True
+            )
+            rep = cluster_df.iloc[0]
+
+            simplex_ids = sorted(cluster_df['simplex_id'].astype(int).unique().tolist())
+            coexisting_solids = self._coexisting_solids_for_simplex_ids(simplex_ids)
+            union_solids.update(coexisting_solids)
+
+            record = {
+                'cluster_id': int(cluster_id),
+                self.temp_col: float(rep[self.temp_col]),
+                'T_C': float(rep['T_C']) if 'T_C' in rep.index and pd.notna(rep['T_C']) else np.nan,
+                'G': float(rep['G']),
+                'n_points': int(len(cluster_df)),
+                'simplex_ids': simplex_ids,
+                'coexisting_solids': coexisting_solids,
+            }
+            for col in self.composition_cols:
+                record[col] = float(rep[col])
+            records.append(record)
+
+        records_df = pd.DataFrame(records)
+        if not records_df.empty:
+            records_df = records_df.sort_values(by=[self.temp_col, 'G'] + self.composition_cols).reset_index(drop=True)
+
+        return {
+            'tmin': tmin,
+            'cluster_records': records_df,
+            'coexisting_solids_union': sorted(union_solids),
+        }
+
+    def get_first_interior_liquid_eutectic(
+        self,
+        interior_tol: float = 1e-6,
+        dedupe_by_composition: bool = True,
+    ) -> Dict[str, Any]:
+        """Generalized counterpart to gliqman_eut_batch first-hit eutectic logic.
+
+        Behavior mirrors the batch script's intent at simplex granularity:
+        1) scan equilibrium simplices in ascending temperature,
+        2) keep simplices that contain liquid vertices,
+        3) compute mean liquid composition within that simplex,
+        4) require interior composition (all component fractions > interior_tol),
+        5) return first valid candidate.
+
+        Returns:
+            dict with eutectic-like temperature/composition and simplex-linked
+            phase coexistence info. If none found, fields are None/empty.
+        """
+        if self.equilibrium_df is None:
+            self.solve()
+
+        if self.equilibrium_df is None or self.equilibrium_df.empty:
+            return {
+                'eutectic_temperature': None,
+                'eutectic_temperature_C': None,
+                'eutectic_composition_independent': None,
+                'eutectic_composition_full': None,
+                'simplex_ids': [],
+                'coexisting_solids': [],
+                'n_liquid_points_at_temperature': 0,
+            }
+
+        if self.simplex_df is None or self.simplex_df.empty:
+            return {
+                'eutectic_temperature': None,
+                'eutectic_temperature_C': None,
+                'eutectic_composition_independent': None,
+                'eutectic_composition_full': None,
+                'simplex_ids': [],
+                'coexisting_solids': [],
+                'n_liquid_points_at_temperature': 0,
+            }
+
+        simplex_scan = self.simplex_df.sort_values(by=[self.temp_col, 'simplex_id'], ascending=True)
+
+        for _, simplex_meta in simplex_scan.iterrows():
+            simplex_id = int(simplex_meta['simplex_id'])
+            simplex_rows = self.equilibrium_df[self.equilibrium_df['simplex_id'] == simplex_id].copy()
+            if simplex_rows.empty:
+                continue
+
+            liq_t = simplex_rows[simplex_rows['Phase'].apply(self._is_liquid_label)].copy()
+            if liq_t.empty:
+                continue
+
+            if dedupe_by_composition:
+                liq_t = (
+                    liq_t
+                    .sort_values(by=['G'] + self.composition_cols, ascending=True)
+                    .drop_duplicates(subset=self.composition_cols, keep='first')
+                    .reset_index(drop=True)
+                )
+
+            indep_mean = liq_t[self.composition_cols].mean(axis=0)
+            indep_vals = [float(indep_mean[col]) for col in self.composition_cols]
+            dep_val = float(1.0 - np.sum(indep_vals))
+            full_comp = [dep_val] + indep_vals
+
+            if not all(v > interior_tol for v in full_comp):
+                continue
+
+            simplex_ids = [simplex_id]
+            coexisting_solids = sorted({
+                p for p in simplex_rows['Phase'].astype(str).unique().tolist()
+                if not self._is_liquid_label(p)
+            })
+
+            temp_val = float(simplex_rows[self.temp_col].iloc[0])
+
+            return {
+                'eutectic_temperature': float(temp_val),
+                'eutectic_temperature_C': float(temp_val - 273.15) if self.temp_col == 'T_K' else np.nan,
+                'eutectic_composition_independent': indep_vals,
+                'eutectic_composition_full': full_comp,
+                'simplex_ids': simplex_ids,
+                'coexisting_solids': coexisting_solids,
+                'n_liquid_points_at_temperature': int(len(liq_t)),
+            }
+
+        return {
+            'eutectic_temperature': None,
+            'eutectic_temperature_C': None,
+            'eutectic_composition_independent': None,
+            'eutectic_composition_full': None,
+            'simplex_ids': [],
+            'coexisting_solids': [],
+            'n_liquid_points_at_temperature': 0,
         }
 
 
@@ -1244,7 +1678,11 @@ if __name__ == "__main__":
     print("=" * 72)
 
     # Intentionally unsorted input to verify canonical remapping behavior with reference phases that have polymorphs (e.g. elemental refs for Zr and Y).
-    input_elements = ["Zr", "Al", "Y", "Fe"]
+    # input_elements = ["Zr", "Al", "Y", "Fe"]
+    # input_elements = ["Bi", "Cd", "Sn", "Ag"]
+    input_elements = ["Bi", "Cd", "Sn"]
+    include_polymorphs = False  # Toggle False for MP-only reference mode.
+    use_all_temps_for_equilibrium_validation = True  # True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
     binary_pairs = [
         f"{canonical_elements[i]}-{canonical_elements[j]}"
@@ -1254,6 +1692,8 @@ if __name__ == "__main__":
     print(f"Input elements: {input_elements}")
     print(f"Canonical elements: {canonical_elements}")
     print(f"Canonical binary pairs: {binary_pairs}")
+    print(f"Polymorph reference mode: {include_polymorphs}")
+    print(f"Equilibrium validation uses all temperatures: {use_all_temps_for_equilibrium_validation}")
 
     param_file = "data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx"
     print(f"Loading binary parameters from: {param_file}")
@@ -1273,6 +1713,10 @@ if __name__ == "__main__":
     interp = GeneralInterpolation(
         elements=input_elements,
         output_dir=output_dir,
+        grid_delta=0.025,
+        param_format='combined',
+        include_polymorphs=include_polymorphs,
+        temp_bounds_k=(50, 500)
         # Use class defaults for grid/temp spacing and param format validation.
     )
     interp.set_binary_params(binary_L_dict)
@@ -1280,7 +1724,7 @@ if __name__ == "__main__":
     assert interp.elements == canonical_elements, (
         f"Canonical element ordering failed: {interp.elements} != {canonical_elements}"
     )
-    assert interp.param_format == 'linear', f"Expected default param_format='linear', got {interp.param_format}"
+    # assert interp.param_format == 'combined', f"Expected param_format='combined', got {interp.param_format}"
 
     # Explicit sign-normalization check using real loaded params from file.
     check_pair = binary_pairs[0]
@@ -1290,7 +1734,11 @@ if __name__ == "__main__":
     l0_a, l0_b, l1_a, l1_b = mixed_dict.pop(check_pair)
     mixed_dict[reversed_key] = [l0_a, l0_b, -l1_a, -l1_b]
 
-    interp_mixed = GeneralInterpolation(elements=input_elements, output_dir=output_dir)
+    interp_mixed = GeneralInterpolation(
+        elements=input_elements,
+        output_dir=output_dir,
+        include_polymorphs=include_polymorphs,
+    )
     interp_mixed.set_binary_params(mixed_dict)
     norm = interp_mixed.binary_L_params[check_pair]
     ref = binary_L_dict[check_pair]
@@ -1335,6 +1783,49 @@ if __name__ == "__main__":
     if same_comp_multi == 0:
         print("[WARN] No same-composition multi-phase solids found for this system.")
 
+    # -----------------------------------------------------------------------
+    # Validation 4: GeneralEquilibrium solve + cluster-aware invariant utility
+    # -----------------------------------------------------------------------
+    # Toggle between full-temperature equilibrium validation and a compact
+    # representative subset (low/mid/high) for faster iteration.
+    unique_temps = sorted(gtx['T_K'].unique())
+    if use_all_temps_for_equilibrium_validation:
+        selected_temps = unique_temps
+    else:
+        if len(unique_temps) >= 3:
+            selected_temps = [
+                unique_temps[0],
+                unique_temps[len(unique_temps) // 2],
+                unique_temps[-1],
+            ]
+        else:
+            selected_temps = unique_temps
+    gtx_subset = gtx[gtx['T_K'].isin(selected_temps)].reset_index(drop=True)
+    print(f"[INFO] Equilibrium validation temperatures: {selected_temps}")
+    print(f"[INFO] Input subset liquid rows: {(gtx_subset['Phase Name'] == 'L').sum()}")
+
+    eq_solver = GeneralEquilibrium(gtx_subset)
+    eq_df = eq_solver.solve(vertical_simplices=True)
+
+    assert not eq_df.empty, "GeneralEquilibrium.solve returned no rows"
+    eq_required_cols = set(interp.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase', 'simplex_id'])
+    assert eq_required_cols.issubset(eq_df.columns), (
+        f"GeneralEquilibrium output missing columns: {eq_required_cols - set(eq_df.columns)}"
+    )
+    assert eq_df['simplex_id'].is_unique is False, "Expected repeated simplex IDs across simplex vertices"
+
+    inv = eq_solver.get_lowest_liquidus_clusters(temp_window_factor=2.0)
+    assert 'cluster_records' in inv and 'coexisting_solids_union' in inv, (
+        "Invariant utility output missing expected keys"
+    )
+
+    eut_like = eq_solver.get_first_interior_liquid_eutectic(interior_tol=1e-6)
+    print(f"[PASS] GeneralEquilibrium solve rows: {len(eq_df)}")
+    print(f"[INFO] Equilibrium liquid rows: {(eq_df['Phase'] == 'L').sum()}")
+    print(f"[PASS] Lowest-liquidus clusters found: {len(inv['cluster_records'])}")
+    print(f"[INFO] Coexisting solids union: {inv['coexisting_solids_union']}")
+    print(f"[INFO] First-interior-liquid eutectic-like result: {eut_like}")
+
     # Save compact validation snapshot.
     snapshot_path = os.path.join(output_dir, "gtx_validation_snapshot.csv")
     gtx.head(5000).to_csv(snapshot_path, index=False)
@@ -1344,6 +1835,11 @@ if __name__ == "__main__":
     print("VALIDATION HARNESS COMPLETE")
     print("=" * 72)
 
+    print(eq_df)
+
+    # print rows of eq_df with Phase = 'L' 
+    print("\nEquilibrium rows with Phase = 'L':")
+    print(eq_df[eq_df['Phase'] == 'L'])
 
     print(gtx)
     print(solid_gtx)
