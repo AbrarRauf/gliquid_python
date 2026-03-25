@@ -25,7 +25,7 @@ from pathlib import Path
 
 WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 
-from gliquid.config import fusion_enthalpies_file, fusion_temps_file
+from gliquid.config import phase_transitions_file
 from gliquid.binary import (
     BinaryLiquid,
     linear_expr, exponential_expr, combined_expr)
@@ -38,6 +38,7 @@ from auth import mpapi_key
 mpr = MPRester(mpapi_key)  
 
 R = 8.314  # J/(mol*K)
+EV_PER_ATOM_TO_J_PER_MOL = 96485.33212
 
 
 # ==============================================================================
@@ -195,16 +196,17 @@ class ThermoExprBuilder:
         """Initialize symbolic variables for the system."""
         # Temperature symbol
         self.t = sp.Symbol('T', real=True, positive=True)
-        
-        # Mole fraction symbols: x0, x1, ..., x[n-2]
-        self.x = sp.symbols(f'x0:{self.n_components - 1}', real=True, nonnegative=True)
+
+        # Independent mole fractions correspond to the latter components
+        # in canonical sorted order: x1, x2, ..., x[n-1].
+        self.x = sp.symbols(f'x1:{self.n_components}', real=True, nonnegative=True)
         if self.n_components == 2:
             self.x = (self.x,) if not isinstance(self.x, tuple) else self.x
-        
-        # All mole fractions including the dependent one
+
+        # Component-0 mole fraction is dependent by closure.
         x_indep = list(self.x)
         x_dep = 1 - sum(self.x)
-        self.mole_fractions = tuple(x_indep + [x_dep])
+        self.mole_fractions = tuple([x_dep] + x_indep)
         
         # Binary pairs
         self.binary_pairs = list(combinations(range(self.n_components), 2))
@@ -486,7 +488,10 @@ class GeneralInterpolation:
         self,
         elements: List[str],
         output_dir: str,
-        grid_delta: float = 0.025,
+        grid_delta: float = 0.05,
+        temp_delta_k: float = 5.0,
+        temp_bounds_offset_k: float = 500.0,
+        temp_bounds_k: Optional[Tuple[float, float]] = None,
         param_format: str = 'linear',
         interp_scheme: str = 'linear',
         tau: float = 8000,
@@ -498,7 +503,10 @@ class GeneralInterpolation:
         Args:
             elements: List of element symbols (e.g., ['Al', 'Cu', 'Si', 'Mg']).
             output_dir: Directory for caching data and saving outputs.
-            grid_delta: Composition grid spacing (default 0.025).
+            grid_delta: Composition grid spacing (default 0.05).
+            temp_delta_k: Temperature grid spacing in Kelvin (default 5 K).
+            temp_bounds_offset_k: Default extension from fusion extrema in K (default 500 K).
+            temp_bounds_k: Optional explicit temperature bounds (Tmin, Tmax) in Kelvin.
             param_format: L parameter format ('linear', 'exponential', 'combined').
             interp_scheme: Interpolation scheme ('linear', 'muggianu', 'kohler').
             tau: Time constant for combined format (default 8000).
@@ -518,6 +526,9 @@ class GeneralInterpolation:
         
         self.output_dir = output_dir
         self.grid_delta = grid_delta
+        self.temp_delta_k = float(temp_delta_k)
+        self.temp_bounds_offset_k = float(temp_bounds_offset_k)
+        self.temp_bounds_k = temp_bounds_k
         self.param_format = param_format
         self.interp_scheme = interp_scheme
         self.tau = tau
@@ -546,6 +557,9 @@ class GeneralInterpolation:
         self.higher_order_params: Dict[Tuple[int, ...], List[float]] = {}
         
         # Output storage
+        self.liquid_gtx: Optional[pd.DataFrame] = None
+        self.solid_gtx: Optional[pd.DataFrame] = None
+        self.gtx_data: Optional[pd.DataFrame] = None
         self.liquid_hsx: Optional[pd.DataFrame] = None
         self.solid_hsx: Optional[pd.DataFrame] = None
         self.hsx_data: Optional[pd.DataFrame] = None
@@ -574,30 +588,102 @@ class GeneralInterpolation:
     
     def load_fusion_data(self) -> 'GeneralInterpolation':
         """
-        Load fusion enthalpies and temperatures for all elements from config files.
+        Load liquid reference enthalpy/entropy/temperature from phase_transitions.json.
         
         Returns:
             self (for method chaining)
         """
-        with open(fusion_enthalpies_file) as f:
-            all_enthalpies = json.load(f)
-        with open(fusion_temps_file) as f:
-            all_temps = json.load(f)
-        
+        with open(phase_transitions_file) as f:
+            transitions_raw = json.load(f)
+
+        elem_map = transitions_raw.get('elements', transitions_raw)
+
+        liquid_enthalpies: Dict[str, float] = {}
+        liquid_entropies: Dict[str, float] = {}
+        melt_temps: Dict[str, float] = {}
+
+        for symbol, elem_data in elem_map.items():
+            for phase in elem_data.get('phases', []):
+                if phase.get('phase_type') != 'liquid':
+                    continue
+                h_val = phase.get('enthalpy_J_per_mol')
+                s_val = phase.get('entropy_J_per_mol_K')
+                t_val = phase.get('transition_temperature_K')
+                if h_val is not None:
+                    liquid_enthalpies[symbol] = float(h_val)
+                if s_val is not None:
+                    liquid_entropies[symbol] = float(s_val)
+                if t_val is not None:
+                    melt_temps[symbol] = float(t_val)
+
+        missing_h = [el for el in self.elements if el not in liquid_enthalpies]
+        missing_s = [el for el in self.elements if el not in liquid_entropies]
+        missing_t = [el for el in self.elements if el not in melt_temps]
+        if missing_h or missing_s or missing_t:
+            missing_parts = []
+            if missing_h:
+                missing_parts.append(f"enthalpy: {missing_h}")
+            if missing_s:
+                missing_parts.append(f"entropy: {missing_s}")
+            if missing_t:
+                missing_parts.append(f"Tm: {missing_t}")
+            raise ValueError("Missing liquid reference data in phase_transitions.json -> " + "; ".join(missing_parts))
+
         self.fusion_data = {
-            'enthalpies': [all_enthalpies[el] for el in self.elements],
-            'temperatures': [all_temps[el] for el in self.elements],
+            'enthalpies': [liquid_enthalpies[el] for el in self.elements],
+            'entropies': [liquid_entropies[el] for el in self.elements],
+            'temperatures': [melt_temps[el] for el in self.elements],
         }
         
-        # Compute entropies: S_fus = H_fus / T_fus
-        self.fusion_data['entropies'] = [
-            h / t for h, t in zip(
-                self.fusion_data['enthalpies'], 
-                self.fusion_data['temperatures']
-            )
-        ]
-        
         return self
+
+    def _load_phase_transition_elements(self) -> Dict[str, dict]:
+        """Load phase transition element map from config file."""
+        with open(phase_transitions_file) as f:
+            transitions_raw = json.load(f)
+        return transitions_raw.get('elements', transitions_raw)
+
+    def _build_elemental_polymorph_df(self) -> pd.DataFrame:
+        """Build elemental solid polymorph reference rows for the current system.
+
+        Each polymorph is represented as a solid phase at pure-element composition
+        with its own H and S from phase_transitions.json.
+        """
+        elements_map = self._load_phase_transition_elements()
+        rows: list[dict] = []
+
+        for el_idx, el in enumerate(self.elements):
+            elem_data = elements_map.get(el, {})
+            for phase in elem_data.get('phases', []):
+                if phase.get('phase_type') != 'solid':
+                    continue
+
+                # Match existing ternary reference behavior: exclude ground-state marker entries.
+                t_trans = phase.get('transition_temperature_K')
+                if t_trans is None or float(t_trans) < 0:
+                    continue
+
+                h_val = phase.get('enthalpy_J_per_mol')
+                s_val = phase.get('entropy_J_per_mol_K')
+                phase_name = phase.get('common_name') or phase.get('phase_name')
+                if h_val is None or s_val is None or not phase_name:
+                    continue
+
+                comp = np.zeros(self.n_components, dtype=float)
+                comp[el_idx] = 1.0
+
+                row = {f'x{i}': float(comp[i + 1]) for i in range(self.n_components - 1)}
+                row['H'] = float(h_val)
+                row['S'] = float(s_val)
+                row['Phase Name'] = str(phase_name)
+                rows.append(row)
+
+        if not rows:
+            return pd.DataFrame(columns=self.get_composition_columns() + ['H', 'S', 'Phase Name'])
+
+        poly_df = pd.DataFrame(rows)
+        poly_df = poly_df.drop_duplicates(subset=self.get_composition_columns() + ['Phase Name', 'H', 'S'])
+        return poly_df.reset_index(drop=True)
     
     def set_binary_params(
         self,
@@ -618,12 +704,31 @@ class GeneralInterpolation:
         Raises:
             ValueError: If not all binary pairs have parameters.
         """
-        # Normalize keys to alphabetical order
-        normalized_params = {}
-        for key, params in L_params.items():
-            parts = key.split('-')
-            normalized_key = '-'.join(sorted(parts))
-            normalized_params[normalized_key] = params
+        normalized_params: Dict[str, List[float]] = {}
+        for key, raw_params in L_params.items():
+            parts = [p.strip() for p in key.split('-')]
+            if len(parts) != 2:
+                raise ValueError(f"Invalid binary key '{key}'. Expected format 'A-B'.")
+            if len(raw_params) != 4:
+                raise ValueError(f"Expected 4 parameters for '{key}' [L0_a, L0_b, L1_a, L1_b], got {len(raw_params)}")
+
+            canonical_key = '-'.join(sorted(parts))
+            params = [float(v) for v in raw_params]
+
+            # If the provided key order is reversed relative to canonical ordering,
+            # map to canonical key and flip L1 sign (same convention as exec_tern_single.py).
+            if key != canonical_key:
+                params[2] = -params[2]
+                params[3] = -params[3]
+
+            if canonical_key in normalized_params:
+                existing = normalized_params[canonical_key]
+                if not np.allclose(existing, params, rtol=1e-12, atol=1e-12):
+                    raise ValueError(
+                        f"Conflicting parameters for binary pair '{canonical_key}'. "
+                        f"Received both {existing} and {params}."
+                    )
+            normalized_params[canonical_key] = params
         
         # Check all pairs are provided
         missing = set(self.binary_pairs) - set(normalized_params.keys())
@@ -632,6 +737,19 @@ class GeneralInterpolation:
         
         self.binary_L_params = normalized_params
         self.binary_fit_types = fit_types or {pair: 'pred' for pair in self.binary_pairs}
+
+        # Normalize fit-type keys if provided.
+        if fit_types:
+            normalized_fit_types: Dict[str, str] = {}
+            for key, label in fit_types.items():
+                parts = [p.strip() for p in key.split('-')]
+                if len(parts) != 2:
+                    continue
+                canonical_key = '-'.join(sorted(parts))
+                normalized_fit_types[canonical_key] = label
+            for pair in self.binary_pairs:
+                normalized_fit_types.setdefault(pair, 'pred')
+            self.binary_fit_types = normalized_fit_types
         
         return self
     
@@ -645,7 +763,9 @@ class GeneralInterpolation:
         
         Args:
             component_indices: Tuple of component indices (e.g., (0, 1, 2) for ternary).
-            params: [H_param, S_param] or similar format.
+            params: Parameter vector. Default supported format is
+                [L2_a, L2_b, L3_a, L3_b], which is internally transformed
+                to temperature-dependent L2(T), L3(T) expressions.
         
         Returns:
             self (for method chaining)
@@ -659,28 +779,54 @@ class GeneralInterpolation:
     
     def _generate_composition_grid(self) -> np.ndarray:
         """
-        Generate an n-dimensional composition grid where sum(x_i) = 1.
+        Generate composition grid using independent variables for latter components.
+
+        For n components in canonical order [E0, E1, ..., E{n-1}]:
+        - Independent variables are x(E1), x(E2), ..., x(E{n-1}).
+        - Dependent variable is x(E0) = 1 - sum(independent).
         
         Returns:
-            Array of shape (n_points, n_components) with valid compositions.
+            Array of shape (n_points, n_components) in canonical component order.
         """
-        # Create 1D grid
         steps = np.arange(0, 1 + self.grid_delta, self.grid_delta)
-        
-        # Generate all combinations
-        grids = np.meshgrid(*[steps] * self.n_components)
-        compositions = np.stack([g.flatten() for g in grids], axis=1)
-        
-        # Filter to valid compositions (sum ≈ 1)
-        sums = compositions.sum(axis=1)
-        valid_mask = np.isclose(sums, 1.0, atol=1e-6)
-        valid_compositions = compositions[valid_mask]
-        
-        # Round to avoid floating point issues
+
+        # Independent grid: dimensions n_components - 1.
+        indep_grids = np.meshgrid(*[steps] * (self.n_components - 1), indexing='ij')
+        indep_points = np.stack([g.flatten() for g in indep_grids], axis=1)
+
+        indep_sums = indep_points.sum(axis=1)
+        valid_mask = (indep_sums <= 1.0 + 1e-9)
+        indep_valid = indep_points[valid_mask]
+
+        dep = 1.0 - indep_valid.sum(axis=1)
+        dep = np.clip(dep, 0.0, 1.0)
+        valid_compositions = np.column_stack([dep, indep_valid])
+
         decimal_places = max(2, -int(np.log10(self.grid_delta)))
         valid_compositions = np.round(valid_compositions, decimal_places)
-        
+
         return valid_compositions
+
+    def _generate_temperature_grid(self) -> np.ndarray:
+        """Generate a temperature grid in Kelvin for GTX evaluation."""
+        if self.fusion_data is None:
+            self.load_fusion_data()
+
+        if self.temp_bounds_k is not None:
+            t_min_k, t_max_k = self.temp_bounds_k
+        else:
+            t_melts = np.asarray(self.fusion_data['temperatures'], dtype=float)
+            t_min_k = float(np.min(t_melts) - self.temp_bounds_offset_k)
+            t_max_k = float(np.max(t_melts) + self.temp_bounds_offset_k)
+
+        t_min_k = max(0.0, float(t_min_k))
+        t_max_k = max(t_min_k, float(t_max_k))
+
+        if self.temp_delta_k <= 0:
+            raise ValueError("temp_delta_k must be positive.")
+
+        t_grid = np.arange(t_min_k, t_max_k + 0.5 * self.temp_delta_k, self.temp_delta_k)
+        return np.round(t_grid, 8)
     
     # =========================================================================
     # Liquid HSX Computation
@@ -698,11 +844,12 @@ class GeneralInterpolation:
             tau=self.tau
         )
         
-        # Set reference Gibbs energies
-        builder.set_reference_gibbs_from_fusion(
-            self.fusion_data['enthalpies'],
-            self.fusion_data['temperatures']
+        # Set reference Gibbs energies directly from liquid H/S values.
+        g_ref_exprs = tuple(
+            self.fusion_data['enthalpies'][i] - builder.t * self.fusion_data['entropies'][i]
+            for i in range(self.n_components)
         )
+        builder.set_reference_gibbs(g_ref_exprs)
         
         # Convert string-keyed params to index-keyed params
         if self.binary_L_params is not None:
@@ -714,57 +861,79 @@ class GeneralInterpolation:
         
         # Add higher-order terms
         for indices, params in self.higher_order_params.items():
-            # Assume params = [H, S] -> expression = H - T*S
-            expr = params[0] - builder.t * params[1] if len(params) > 1 else params[0]
+            if len(params) == 4:
+                # Default higher-order vector format:
+                # [L2_a, L2_b, L3_a, L3_b] with the same param_format as binaries.
+                expr_func = PARAM_EXPR_REGISTRY[self.param_format]
+                if self.param_format == 'combined':
+                    l2_expr = _combined_expr(params[0], params[1], builder.t, builder.tau)
+                    l3_expr = _combined_expr(params[2], params[3], builder.t, builder.tau)
+                else:
+                    l2_expr = expr_func(params[0], params[1], builder.t)
+                    l3_expr = expr_func(params[2], params[3], builder.t)
+
+                x_first = builder.get_mole_fraction(indices[0])
+                x_last = builder.get_mole_fraction(indices[-1])
+                expr = l2_expr + l3_expr * (x_first - x_last)
+            elif len(params) == 2:
+                # Backward-compatible fallback: [const, linear_T_coeff].
+                expr = params[0] + params[1] * builder.t
+            elif len(params) == 1:
+                expr = params[0]
+            else:
+                raise ValueError(
+                    f"Unsupported higher-order parameter vector for indices {indices}: {params}. "
+                    "Expected lengths 1, 2, or 4."
+                )
+
             builder.add_higher_order_term(indices, expr)
         
         builder.build()
         return builder
     
-    def compute_liquid_hsx(self) -> pd.DataFrame:
+    def compute_liquid_gtx(self) -> pd.DataFrame:
         """
-        Compute liquid phase HSX data on the composition grid.
+        Compute liquid phase GTX data on composition and temperature grids.
         
         Returns:
-            DataFrame with columns: x0, x1, ..., x[n-2], H, S, 'Phase Name'
+            DataFrame with columns: x0, x1, ..., x[n-2], T_K, T_C, G, 'Phase Name'
         """
-        # Build expressions
         self._expr_builder = self._build_expressions()
-        
-        # Generate composition grid
+
         compositions = self._generate_composition_grid()
-        
-        # Get lambdified functions
-        h_func = self._expr_builder.lambdify('h_liquid')
-        s_func = self._expr_builder.lambdify('s_liquid')
-        
-        # Prepare evaluation arguments
-        # T = mean melting temperature
-        mean_temp = np.mean(self.fusion_data['temperatures'])
-        
-        # Independent compositions: x0, x1, ..., x[n-2]
-        x_indep = [compositions[:, i] for i in range(self.n_components - 1)]
-        eval_args = x_indep + [mean_temp]
-        
-        # Evaluate with error suppression for edge cases
-        with np.errstate(divide='ignore', invalid='ignore'):
-            h_values = h_func(*eval_args)
-            s_values = s_func(*eval_args)
-        
-        # Replace inf/nan with 0
-        h_values = np.where(np.isfinite(h_values), h_values, 0)
-        s_values = np.where(np.isfinite(s_values), s_values, 0)
-        
-        # Build DataFrame
-        data = {}
-        for i in range(self.n_components - 1):
-            data[f'x{i}'] = compositions[:, i]
-        data['H'] = h_values
-        data['S'] = s_values
-        data['Phase Name'] = 'L'
-        
-        self.liquid_hsx = pd.DataFrame(data)
-        return self.liquid_hsx
+        t_grid_k = self._generate_temperature_grid()
+
+        g_func = self._expr_builder.lambdify('g_liquid')
+        x_indep = [compositions[:, i + 1] for i in range(self.n_components - 1)]
+
+        gtx_frames = []
+        for temp_k in t_grid_k:
+            eval_args = x_indep + [temp_k]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                g_values = g_func(*eval_args)
+
+            g_values = np.asarray(g_values, dtype=float)
+            g_values = np.where(np.isfinite(g_values), g_values, np.nan)
+
+            data = {}
+            for i in range(self.n_components - 1):
+                # x0.. are the latter canonical components (E1..E{n-1}).
+                data[f'x{i}'] = compositions[:, i + 1]
+            data['T_K'] = float(temp_k)
+            data['T_C'] = float(temp_k - 273.15)
+            data['G'] = g_values
+            data['Phase Name'] = 'L'
+            gtx_frames.append(pd.DataFrame(data))
+
+        self.liquid_gtx = pd.concat(gtx_frames, ignore_index=True)
+        self.liquid_gtx = self.liquid_gtx.dropna(subset=['G']).reset_index(drop=True)
+        return self.liquid_gtx
+
+    def compute_liquid_hsx(self) -> pd.DataFrame:
+        """Deprecated HSX helper retained for backward compatibility."""
+        raise NotImplementedError(
+            "compute_liquid_hsx has been replaced by compute_liquid_gtx (G(T,x) workflow)."
+        )
     
     # =========================================================================
     # Solid Formation Energies from Materials Project
@@ -841,8 +1010,8 @@ class GeneralInterpolation:
             comp = Composition(formula)
             entry_elements = comp.elements
             
-            # Formation energy in J/mol (converted from eV/atom)
-            form_energy = phase_diagram.get_form_energy_per_atom(entry) * 96485
+            # Formation energy in J/mol (converted from eV/atom).
+            form_energy = phase_diagram.get_form_energy_per_atom(entry) * EV_PER_ATOM_TO_J_PER_MOL
             formation_energies.append(form_energy)
             
             # Get atomic fractions for each element
@@ -861,10 +1030,11 @@ class GeneralInterpolation:
         # Track deepest formation energy
         self.metadata['deepest_formation_energy'] = min(formation_energies)
         
-        # Build DataFrame (exclude last composition column since it's dependent)
+        # Build DataFrame using independent composition convention:
+        # x0.. map to canonical components E1..E{n-1}.
         data = {}
         for i in range(self.n_components - 1):
-            data[f'x{i}'] = compositions_arr[:, i]
+            data[f'x{i}'] = compositions_arr[:, i + 1]
         data['H'] = formation_energies
         data['S'] = [0.0] * len(formation_energies)  # Solids have S=0 in this model
         data['Phase Name'] = phase_names
@@ -875,8 +1045,36 @@ class GeneralInterpolation:
         df = df.loc[df.groupby('Phase Name')['H'].idxmin()]
         df = df.reset_index(drop=True)
         
+        # Add elemental polymorph references (same composition, different G(T)).
+        poly_df = self._build_elemental_polymorph_df()
+        if not poly_df.empty:
+            df = pd.concat([df, poly_df], ignore_index=True)
+            df = df.drop_duplicates(subset=self.get_composition_columns() + ['Phase Name', 'H', 'S'])
+            df = df.reset_index(drop=True)
+
         self.solid_hsx = df
+        self.metadata['n_elemental_polymorph_refs'] = int(len(poly_df))
         return self.solid_hsx
+
+    def compute_solid_gtx(self, temp_grid_k: Optional[np.ndarray] = None) -> pd.DataFrame:
+        """Expand solid reference energies to GTX by evaluating G = H - T*S over T grid."""
+        if self.solid_hsx is None:
+            self.fetch_solid_formation_energies(use_cache=True)
+
+        if temp_grid_k is None:
+            temp_grid_k = self._generate_temperature_grid()
+
+        frames = []
+        for temp_k in temp_grid_k:
+            df_t = self.solid_hsx.copy()
+            df_t['T_K'] = float(temp_k)
+            df_t['T_C'] = float(temp_k - 273.15)
+            df_t['G'] = df_t['H'].astype(float) - float(temp_k) * df_t['S'].astype(float)
+            keep_cols = self.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase Name']
+            frames.append(df_t[keep_cols])
+
+        self.solid_gtx = pd.concat(frames, ignore_index=True)
+        return self.solid_gtx
     
     # =========================================================================
     # Main Interpolation Pipeline
@@ -909,27 +1107,30 @@ class GeneralInterpolation:
         else:
             print("\n[1/3] Fusion data already loaded")
         
-        # Step 2: Compute liquid HSX
-        print("\n[2/3] Computing liquid phase HSX...")
-        self.compute_liquid_hsx()
-        print(f"       Generated {len(self.liquid_hsx)} liquid phase points")
-        
+        # Step 2: Compute liquid GTX
+        print("\n[2/4] Computing liquid phase GTX...")
+        self.compute_liquid_gtx()
+        print(f"       Generated {len(self.liquid_gtx)} liquid GTX points")
+
         # Step 3: Fetch solid formation energies
-        print("\n[3/3] Fetching solid formation energies...")
+        print("\n[3/4] Fetching solid formation energies...")
         self.fetch_solid_formation_energies(use_cache=use_mp_cache)
         print(f"       Found {len(self.solid_hsx)} stable solid phases")
-        
-        # Combine dataframes
-        self.hsx_data = pd.concat(
-            [self.liquid_hsx, self.solid_hsx], 
-            ignore_index=True
-        )
-        self.hsx_data = self.hsx_data.drop_duplicates()
-        self.hsx_data = self.hsx_data.reset_index(drop=True)
+
+        # Step 4: Expand solids to GTX and combine.
+        print("\n[4/4] Expanding solids to GTX and combining datasets...")
+        self.compute_solid_gtx()
+
+        self.gtx_data = pd.concat([self.liquid_gtx, self.solid_gtx], ignore_index=True)
+        self.gtx_data = self.gtx_data.drop_duplicates()
+        self.gtx_data = self.gtx_data.reset_index(drop=True)
+
+        # Alias for backward compatibility with existing callers.
+        self.hsx_data = self.gtx_data
         
         print(f"\nInterpolation complete!")
-        print(f"  Total HSX points: {len(self.hsx_data)}")
-        print(f"  Phases: {self.hsx_data['Phase Name'].nunique()}")
+        print(f"  Total GTX points: {len(self.gtx_data)}")
+        print(f"  Phases: {self.gtx_data['Phase Name'].nunique()}")
         
         return self
     
@@ -965,14 +1166,14 @@ class GeneralInterpolation:
             Path to saved file.
         """
         if self.hsx_data is None:
-            raise ValueError("No HSX data to save. Run interpolate() first.")
+            raise ValueError("No GTX data to save. Run interpolate() first.")
         
         if filename is None:
-            filename = f"{'-'.join(self.elements)}_hsx.csv"
+            filename = f"{'-'.join(self.elements)}_gtx.csv"
         
         filepath = os.path.join(self.output_dir, filename)
         self.hsx_data.to_csv(filepath, index=False)
-        print(f"Saved HSX data to: {filepath}")
+        print(f"Saved GTX data to: {filepath}")
         return filepath
     
     def summary(self) -> Dict[str, any]:
@@ -991,9 +1192,10 @@ class GeneralInterpolation:
             'interp_scheme': self.interp_scheme,
             'fusion_data_loaded': self.fusion_data is not None,
             'binary_params_set': self.binary_L_params is not None,
-            'n_liquid_points': len(self.liquid_hsx) if self.liquid_hsx is not None else 0,
+            'n_liquid_points': len(self.liquid_gtx) if self.liquid_gtx is not None else 0,
             'n_solid_phases': len(self.solid_hsx) if self.solid_hsx is not None else 0,
             'total_hsx_points': len(self.hsx_data) if self.hsx_data is not None else 0,
+            'temp_delta_k': self.temp_delta_k,
             **self.metadata
         }
 
@@ -1603,161 +1805,141 @@ class GeneralPlotter:
 
 
 if __name__ == "__main__":
-    import plotly.offline as ploff
-    from gliquid.config import data_dir
-    
-    # ===========================================================================
-    # QUATERNARY SYSTEM: Ba-Mg-Si-Al
-    # ===========================================================================
-    
-    print("="*70)
-    print("QUATERNARY SYSTEM DEMONSTRATION: Ba-Mg-Si-Al")
-    print("="*70)
-    
-    # System definition (alphabetically sorted for consistency)
-    quat_sys = ["Al", "Ba", "Mg", "Si"]
-    sorted_sys = sorted(quat_sys)  # ['Al', 'Ba', 'Mg', 'Si']
-    
-    # Generate all binary pairs for quaternary system (6 pairs)
-    binary_sys_labels = []
-    for i in range(len(sorted_sys)):
-        for j in range(i + 1, len(sorted_sys)):
-            binary_sys_labels.append(f"{sorted_sys[i]}-{sorted_sys[j]}")
-    
-    print(f"\nBinary pairs needed: {binary_sys_labels}")
-    
-    # Load binary parameters from fitted data
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    
-    # Build binary L parameter dictionary with proper sign handling
-    binary_L_dict = {}
-    
-    for bin_sys in binary_sys_labels:
-        # Check if elements need to be flipped (sorted vs stored order)
-        flipped_sys = "-".join(sorted(bin_sys.split('-')))
-        order_changed = (bin_sys != flipped_sys)
-        
-        # Search for system in parameter DataFrame
-        if bin_sys in binary_param_df['system'].tolist():
-            params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
-        elif flipped_sys in binary_param_df['system'].tolist():
-            params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
-        else:
-            raise ValueError(f"Binary system {bin_sys} not found in parameter database")
-        
-        # Extract Redlich-Kister parameters
-        L0_a = float(params["L0_a"])
-        L0_b = float(params["L0_b"])
-        L1_a = float(params["L1_a"])
-        L1_b = float(params["L1_b"])
-        
-        # Flip L1 signs if element order was reversed
-        # (L1 term is asymmetric: L1 * (x_A - x_B), sign depends on element order)
-        if order_changed:
-            L1_a = -L1_a
-            L1_b = -L1_b
-        
-        binary_L_dict[bin_sys] = [L0_a, L0_b, L1_a, L1_b]
-        print(f"  {bin_sys}: L0=[{L0_a:.1f}, {L0_b:.4f}], L1=[{L1_a:.1f}, {L1_b:.4f}]")
-    
-    # ===========================================================================
-    # STEP 1: Initialize GeneralInterpolation
-    # ===========================================================================
-    
-    print("\n" + "="*70)
-    print("STEP 1: GeneralInterpolation Setup")
-    print("="*70)
-    
+    # Validation-only harness (no plotting):
+    # - uses real L-params from existing Excel path
+    # - checks canonical ordering + L1 sign normalization
+    # - checks GTX schema and temperature consistency
+    # - checks same-composition multi-phase readiness from solid polymorph refs
+
+    def _load_binary_params_from_file(df: pd.DataFrame, pair_label: str) -> list[float]:
+        """Load [L0_a, L0_b, L1_a, L1_b] for a canonical pair from dataframe.
+
+        If only reversed ordering is found in the file, flip L1 signs to map
+        into canonical sorted pair convention.
+        """
+        canonical = "-".join(sorted(pair_label.split('-')))
+        parts = canonical.split('-')
+        reversed_label = f"{parts[1]}-{parts[0]}"
+
+        if canonical in df['system'].tolist():
+            row = df[df['system'] == canonical].iloc[0]
+            l0_a = float(row['L0_a'])
+            l0_b = float(row['L0_b'])
+            l1_a = float(row['L1_a'])
+            l1_b = float(row['L1_b'])
+            return [l0_a, l0_b, l1_a, l1_b]
+
+        if reversed_label in df['system'].tolist():
+            row = df[df['system'] == reversed_label].iloc[0]
+            l0_a = float(row['L0_a'])
+            l0_b = float(row['L0_b'])
+            l1_a = -float(row['L1_a'])
+            l1_b = -float(row['L1_b'])
+            return [l0_a, l0_b, l1_a, l1_b]
+
+        raise ValueError(f"Binary pair '{pair_label}' not found in parameter file.")
+
+    print("=" * 72)
+    print("GENERAL GTX VALIDATION HARNESS (NO PLOTTING)")
+    print("=" * 72)
+
+    # Intentionally unsorted input to verify canonical remapping behavior with reference phases that have polymorphs (e.g. elemental refs for Zr and Y).
+    input_elements = ["Zr", "Al", "Y", "Fe"]
+    canonical_elements = sorted(input_elements)
+    binary_pairs = [
+        f"{canonical_elements[i]}-{canonical_elements[j]}"
+        for i, j in combinations(range(len(canonical_elements)), 2)
+    ]
+
+    print(f"Input elements: {input_elements}")
+    print(f"Canonical elements: {canonical_elements}")
+    print(f"Canonical binary pairs: {binary_pairs}")
+
+    param_file = "data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx"
+    print(f"Loading binary parameters from: {param_file}")
+    binary_param_df = pd.read_excel(param_file)
+
+    binary_L_dict: Dict[str, List[float]] = {
+        pair: _load_binary_params_from_file(binary_param_df, pair)
+        for pair in binary_pairs
+    }
+
     output_dir = "all_dumps/quaternary_demo/"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
+    os.makedirs(output_dir, exist_ok=True)
+
+    # -----------------------------------------------------------------------
+    # Validation 1: Canonical ordering + sign normalization
+    # -----------------------------------------------------------------------
     interp = GeneralInterpolation(
-        elements=sorted_sys,
+        elements=input_elements,
         output_dir=output_dir,
-        grid_delta=0.025,  # 5% composition steps (coarser for quaternary)
-        param_format='combined',
-        interp_scheme='linear'
+        # Use class defaults for grid/temp spacing and param format validation.
     )
-    
-    # Set binary parameters
     interp.set_binary_params(binary_L_dict)
-    
-    print("\nSystem summary:")
-    print(f"  Elements: {interp.elements}")
-    print(f"  Binary pairs: {interp.binary_pairs}")
-    print(f"  Grid delta: {interp.grid_delta}")
-    
-    # ===========================================================================
-    # STEP 2: Run Interpolation (generates HSX data)
-    # ===========================================================================
-    
-    print("\n" + "="*70)
-    print("STEP 2: Running Interpolation (this may take a while for MP fetch)")
-    print("="*70)
-    
+
+    assert interp.elements == canonical_elements, (
+        f"Canonical element ordering failed: {interp.elements} != {canonical_elements}"
+    )
+    assert interp.param_format == 'linear', f"Expected default param_format='linear', got {interp.param_format}"
+
+    # Explicit sign-normalization check using real loaded params from file.
+    check_pair = binary_pairs[0]
+    p0, p1 = check_pair.split('-')
+    reversed_key = f"{p1}-{p0}"
+    mixed_dict = dict(binary_L_dict)
+    l0_a, l0_b, l1_a, l1_b = mixed_dict.pop(check_pair)
+    mixed_dict[reversed_key] = [l0_a, l0_b, -l1_a, -l1_b]
+
+    interp_mixed = GeneralInterpolation(elements=input_elements, output_dir=output_dir)
+    interp_mixed.set_binary_params(mixed_dict)
+    norm = interp_mixed.binary_L_params[check_pair]
+    ref = binary_L_dict[check_pair]
+    assert np.allclose(norm, ref, rtol=1e-12, atol=1e-12), (
+        f"L1 sign normalization mismatch for {check_pair}: normalized={norm}, expected={ref}"
+    )
+    print("[PASS] Canonical element ordering and binary sign normalization")
+
+    # -----------------------------------------------------------------------
+    # Validation 2: Full interpolation run and GTX schema checks
+    # -----------------------------------------------------------------------
     interp.interpolate(use_mp_cache=True)
-    
-    # Save HSX data
-    hsx_csv_path = interp.save_hsx("quaternary_hsx_data.csv")
-    print(f"\nHSX data saved to: {hsx_csv_path}")
-    
-    # ===========================================================================
-    # STEP 3: Initialize GeneralPlotter and plot ternary slice
-    # Using T-loop approach following ternary_HSX.py
-    # ===========================================================================
-    
-    print("\n" + "="*70)
-    print("STEP 3: Ternary Slice Ba-Mg-Si at Al = 0%")
-    print("="*70)
-    
-    # Create plotter for the ternary slice
-    plotter = GeneralPlotter(
-        hsx_data=interp.hsx_data,
-        elements=sorted_sys,
-        output_dir=output_dir,
-        T_incr=10.0,  # 10K temperature increments (matching ternary_HSX.py)
+    gtx = interp.gtx_data
+
+    required_cols = set(interp.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase Name'])
+    missing_cols = required_cols - set(gtx.columns)
+    assert not missing_cols, f"Missing required GTX columns: {missing_cols}"
+
+    assert np.isfinite(gtx['T_K']).all(), "Non-finite temperatures found in T_K"
+    assert (gtx['T_K'] >= 0.0).all(), "Found temperatures below 0 K"
+    assert np.allclose(gtx['T_C'].to_numpy(), gtx['T_K'].to_numpy() - 273.15, rtol=1e-12, atol=1e-9), (
+        "T_C column is inconsistent with T_K - 273.15"
     )
-    
-    # Define ternary slice by fixing Al = 0
-    plotter.define_ternary_slice(
-        fixed_element='Al',
-        fixed_value=0.0,
-        tolerance=0.01
-    )
-    
-    # Process data using T-loop convex hull approach
-    plotter.process_data()
-    
-    # Generate plot
-    fig1 = plotter.plot_ternary()
-    
-    slice1_path = os.path.join(output_dir, "ternary_BaMgSi_Al0.html")
-    ploff.plot(fig1, filename=slice1_path, auto_open=False)
-    print(f"Saved: {slice1_path}")
-    
-    print(f"\nPlotter summary: {plotter.summary()}")
-    
-    # ===========================================================================
-    # Export plotting data for verification
-    # ===========================================================================
-    
-    print("\n" + "="*70)
-    print("EXPORTING PLOTTING DATA")
-    print("="*70)
-    
-    plotting_data = plotter.get_plotting_data()
-    data_path = os.path.join(output_dir, "ternary_slice_data.csv")
-    plotting_data.to_csv(data_path, index=False)
-    print(f"Plotting data saved to: {data_path}")
-    print(f"  Points: {len(plotting_data)}")
-    print(f"  Temperature range: {plotting_data['T'].min():.1f}°C to {plotting_data['T'].max():.1f}°C")
-    
-    print("\n" + "="*70)
-    print("DEMONSTRATION COMPLETE")
-    print("="*70)
-    print(f"Output directory: {output_dir}")
-    print("Generated files:")
-    print(f"  - quaternary_hsx_data.csv")
-    print(f"  - ternary_BaMgSi_Al0.html")
-    print(f"  - ternary_slice_data.csv")
+
+    comp_cols = interp.get_composition_columns()
+    dep = 1.0 - gtx[comp_cols].sum(axis=1)
+    assert ((dep >= -1e-8) & (dep <= 1.0 + 1e-8)).all(), "Dependent composition is out of physical bounds"
+
+    print("[PASS] GTX schema and temperature/composition sanity checks")
+    print(f"       GTX rows: {len(gtx)}")
+    print(f"       T range: {gtx['T_K'].min():.2f} K to {gtx['T_K'].max():.2f} K")
+
+    # -----------------------------------------------------------------------
+    # Validation 3: Polymorph readiness (same composition, multiple solid phases)
+    # -----------------------------------------------------------------------
+    solid_gtx = interp.solid_gtx if interp.solid_gtx is not None else interp.compute_solid_gtx()
+    solid_group = solid_gtx.groupby(comp_cols)['Phase Name'].nunique().reset_index(name='n_phase')
+    same_comp_multi = int((solid_group['n_phase'] > 1).sum())
+
+    print(f"[INFO] Same-composition multi-solid reference points: {same_comp_multi}")
+    print(f"[INFO] Elemental polymorph refs added: {interp.metadata.get('n_elemental_polymorph_refs', 0)}")
+    if same_comp_multi == 0:
+        print("[WARN] No same-composition multi-phase solids found for this system.")
+
+    # Save compact validation snapshot.
+    snapshot_path = os.path.join(output_dir, "gtx_validation_snapshot.csv")
+    gtx.head(5000).to_csv(snapshot_path, index=False)
+    print(f"Saved validation snapshot: {snapshot_path}")
+
+    print("=" * 72)
+    print("VALIDATION HARNESS COMPLETE")
+    print("=" * 72)
