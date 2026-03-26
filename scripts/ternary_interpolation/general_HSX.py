@@ -490,7 +490,7 @@ class GeneralInterpolation:
         output_dir: str,
         grid_delta: float = 0.025,
         temp_delta_k: float = 5.0,
-        temp_bounds_offset_k: float = 500.0,
+        temp_bounds_offset_k: float = 200.0,
         temp_bounds_k: Optional[Tuple[float, float]] = None,
         param_format: str = 'linear',
         interp_scheme: str = 'linear',
@@ -506,7 +506,7 @@ class GeneralInterpolation:
             output_dir: Directory for caching data and saving outputs.
             grid_delta: Composition grid spacing (default 0.025).
             temp_delta_k: Temperature grid spacing in Kelvin (default 5 K).
-            temp_bounds_offset_k: Default extension from fusion extrema in K (default 500 K).
+            temp_bounds_offset_k: Default extension from fusion extrema in K (default 200 K).
             temp_bounds_k: Optional explicit temperature bounds (Tmin, Tmax) in Kelvin.
             param_format: L parameter format ('linear', 'exponential', 'combined').
             interp_scheme: Interpolation scheme ('linear', 'muggianu', 'kohler').
@@ -1441,7 +1441,6 @@ class GeneralEquilibrium:
 
     def get_lowest_liquidus_clusters(
         self,
-        temp_window_factor: float = 2.0,
         comp_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Find cluster-aware lowest-liquidus candidates and simplex-linked solids."""
@@ -1465,12 +1464,11 @@ class GeneralEquilibrium:
             }
 
         tmin = float(liq_df[self.temp_col].min())
-        dt = self._infer_temperature_step()
-        window = float(temp_window_factor) * float(dt)
-        tmax = tmin + window
-        candidates = liq_df[liq_df[self.temp_col] <= tmax + 1e-12].copy()
+        # Candidate liquid points are taken strictly at the first liquidus
+        # temperature (no Tmin + dT window).
+        candidates = liq_df[np.isclose(liq_df[self.temp_col], tmin, rtol=1e-12, atol=1e-12)].copy()
 
-        # Keep one representative per composition in the near-minimum window,
+        # Keep one representative per composition at Tmin,
         # preferring the lowest-T and then lowest-G row.
         if not candidates.empty:
             candidates = (
@@ -1680,8 +1678,11 @@ if __name__ == "__main__":
     # Intentionally unsorted input to verify canonical remapping behavior with reference phases that have polymorphs (e.g. elemental refs for Zr and Y).
     # input_elements = ["Zr", "Al", "Y", "Fe"]
     # input_elements = ["Bi", "Cd", "Sn", "Ag"]
-    input_elements = ["Bi", "Cd", "Sn"]
-    include_polymorphs = False  # Toggle False for MP-only reference mode.
+    # input_elements = ["Bi", "Cd", "Sn"]
+    # input_elements = ["Al", "Cu", "Si", "Mg"]
+    # input_elements = ["Pb", "Sn", "Cd", "Zn"]
+    input_elements = ["Ag", "Sn", "Bi", "Zn"]
+    include_polymorphs = False # Toggle False for MP-only reference mode.
     use_all_temps_for_equilibrium_validation = True  # True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
     binary_pairs = [
@@ -1714,9 +1715,8 @@ if __name__ == "__main__":
         elements=input_elements,
         output_dir=output_dir,
         grid_delta=0.025,
-        param_format='combined',
         include_polymorphs=include_polymorphs,
-        temp_bounds_k=(50, 500)
+        temp_bounds_k=(350, 450)
         # Use class defaults for grid/temp spacing and param format validation.
     )
     interp.set_binary_params(binary_L_dict)
@@ -1814,7 +1814,7 @@ if __name__ == "__main__":
     )
     assert eq_df['simplex_id'].is_unique is False, "Expected repeated simplex IDs across simplex vertices"
 
-    inv = eq_solver.get_lowest_liquidus_clusters(temp_window_factor=2.0)
+    inv = eq_solver.get_lowest_liquidus_clusters()
     assert 'cluster_records' in inv and 'coexisting_solids_union' in inv, (
         "Invariant utility output missing expected keys"
     )
