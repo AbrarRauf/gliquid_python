@@ -125,8 +125,8 @@ class ThermoExprBuilder:
         param_format: Format for L parameter temperature dependence ('linear', 'exponential', 'combined').
         interp_scheme: Interpolation scheme ('linear', 'muggianu', 'kohler').
         t: Temperature symbol.
-        x: Tuple of independent mole fraction symbols.
-        mole_fractions: Tuple of all mole fractions (including dependent one).
+        x: Tuple of independent atom-fraction symbols.
+        atom_fractions: Tuple of all atom fractions (including dependent one).
         binary_pairs: List of (i, j) tuples for all binary pairs.
         
         # Expression outputs (populated after build())
@@ -197,16 +197,16 @@ class ThermoExprBuilder:
         # Temperature symbol
         self.t = sp.Symbol('T', real=True, positive=True)
 
-        # Independent mole fractions correspond to the latter components
+        # Independent atom fractions correspond to the latter components
         # in canonical sorted order: x1, x2, ..., x[n-1].
         self.x = sp.symbols(f'x1:{self.n_components}', real=True, nonnegative=True)
         if self.n_components == 2:
             self.x = (self.x,) if not isinstance(self.x, tuple) else self.x
 
-        # Component-0 mole fraction is dependent by closure.
+        # Component-0 atom fraction is dependent by closure.
         x_indep = list(self.x)
         x_dep = 1 - sum(self.x)
-        self.mole_fractions = tuple([x_dep] + x_indep)
+        self.atom_fractions = tuple([x_dep] + x_indep)
         
         # Binary pairs
         self.binary_pairs = list(combinations(range(self.n_components), 2))
@@ -216,11 +216,11 @@ class ThermoExprBuilder:
         """Number of binary pairs: n*(n-1)/2"""
         return len(self.binary_pairs)
     
-    def get_mole_fraction(self, index: int) -> sp.Expr:
-        """Get mole fraction expression for component at given index."""
+    def get_atom_fraction(self, index: int) -> sp.Expr:
+        """Get atom-fraction expression for component at given index."""
         if index < 0 or index >= self.n_components:
             raise IndexError(f"Component index {index} out of range [0, {self.n_components - 1}]")
-        return self.mole_fractions[index]
+        return self.atom_fractions[index]
     
     # =========================================================================
     # Input setters
@@ -318,7 +318,7 @@ class ThermoExprBuilder:
     def _build_ideal_mixing_gibbs(self) -> sp.Expr:
         """Build ideal mixing Gibbs energy: G_ideal = R*T * sum(xi * ln(xi))."""
         mixing_terms = []
-        for xi in self.mole_fractions:
+        for xi in self.atom_fractions:
             term = sp.Piecewise(
                 (0, sp.Eq(xi, 0)),
                 (xi * sp.log(xi), True)
@@ -329,7 +329,7 @@ class ThermoExprBuilder:
     def _build_reference_gibbs(self) -> sp.Expr:
         """Build reference Gibbs energy: G_ref = sum(xi * Gi_ref)."""
         return sum(
-            self.mole_fractions[i] * self.g_ref_exprs[i]
+            self.atom_fractions[i] * self.g_ref_exprs[i]
             for i in range(self.n_components)
         )
     
@@ -343,7 +343,7 @@ class ThermoExprBuilder:
     ) -> sp.Expr:
         """Build excess Gibbs contribution from one binary pair."""
         weight_func = INTERPOLATION_SCHEMES[self.interp_scheme]
-        weight, xi_eff, xj_eff = weight_func(self.mole_fractions, i, j)
+        weight, xi_eff, xj_eff = weight_func(self.atom_fractions, i, j)
         
         # Redlich-Kister 2-term polynomial
         rk_expr = l0_expr + l1_expr * (xi_eff - xj_eff)
@@ -400,7 +400,7 @@ class ThermoExprBuilder:
         for indices, expr in self.higher_order_exprs.items():
             product_term = sp.Integer(1)
             for idx in indices:
-                product_term *= self.mole_fractions[idx]
+                product_term *= self.atom_fractions[idx]
             self.g_excess += expr * product_term
         
         # Total Gibbs energy
@@ -858,7 +858,7 @@ class GeneralInterpolation:
         return np.round(t_grid, 8)
     
     # =========================================================================
-    # Liquid HSX Computation
+    # Liquid  Computation
     # =========================================================================
     
     def _build_expressions(self) -> ThermoExprBuilder:
@@ -901,8 +901,8 @@ class GeneralInterpolation:
                     l2_expr = expr_func(params[0], params[1], builder.t)
                     l3_expr = expr_func(params[2], params[3], builder.t)
 
-                x_first = builder.get_mole_fraction(indices[0])
-                x_last = builder.get_mole_fraction(indices[-1])
+                x_first = builder.get_atom_fraction(indices[0])
+                x_last = builder.get_atom_fraction(indices[-1])
                 expr = l2_expr + l3_expr * (x_first - x_last)
             elif len(params) == 2:
                 # Backward-compatible fallback: [const, linear_T_coeff].
@@ -1172,8 +1172,6 @@ class GeneralInterpolation:
         self.gtx_data = self.gtx_data.drop_duplicates()
         self.gtx_data = self.gtx_data.reset_index(drop=True)
 
-        # Alias for backward compatibility with existing callers.
-        self.hsx_data = self.gtx_data
         
         print(f"\nInterpolation complete!")
         print(f"  Total GTX points: {len(self.gtx_data)}")
@@ -1202,9 +1200,9 @@ class GeneralInterpolation:
         parts = pair_str.split('-')
         return tuple(sorted(parts))
     
-    def save_hsx(self, filename: Optional[str] = None) -> str:
+    def save_gtx(self, filename: Optional[str] = None) -> str:
         """
-        Save the HSX data to a CSV file.
+        Save the GTX data to a CSV file.
         
         Args:
             filename: Output filename. If None, uses system name.
@@ -1212,14 +1210,14 @@ class GeneralInterpolation:
         Returns:
             Path to saved file.
         """
-        if self.hsx_data is None:
+        if self.gtx_data is None:
             raise ValueError("No GTX data to save. Run interpolate() first.")
         
         if filename is None:
             filename = f"{'-'.join(self.elements)}_gtx.csv"
         
         filepath = os.path.join(self.output_dir, filename)
-        self.hsx_data.to_csv(filepath, index=False)
+        self.gtx_data.to_csv(filepath, index=False)
         print(f"Saved GTX data to: {filepath}")
         return filepath
     
@@ -1242,7 +1240,6 @@ class GeneralInterpolation:
             'binary_params_set': self.binary_L_params is not None,
             'n_liquid_points': len(self.liquid_gtx) if self.liquid_gtx is not None else 0,
             'n_solid_phases': len(self.solid_hsx) if self.solid_hsx is not None else 0,
-            'total_hsx_points': len(self.hsx_data) if self.hsx_data is not None else 0,
             'temp_delta_k': self.temp_delta_k,
             **self.metadata
         }
@@ -1700,8 +1697,8 @@ if __name__ == "__main__":
     # input_elements = ["Bi", "Cd", "Sn"]
     # input_elements = ["Al", "Cu", "Si", "Mg"]
     # input_elements = ["Pb", "Sn", "Cd", "Zn"]
-    input_elements = ["Pb", "Sn", "Cd", "Bi"]
-    # input_elements = ["Ag", "Sn", "Bi", "Zn"]
+    # input_elements = ["Pb", "Sn", "Cd", "Bi"]
+    input_elements = ["Ag", "Sn", "Bi", "Zn"]
     include_polymorphs = False # Toggle False for MP-only reference mode.
     use_all_temps_for_equilibrium_validation = True  # True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
@@ -1736,8 +1733,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         grid_delta=0.025,
         include_polymorphs=include_polymorphs,
-        temp_bounds_k=(300, 400)
-        # Use class defaults for grid/temp spacing and param format validation.
+        temp_bounds_k=(400, 500),
     )
     interp.set_binary_params(binary_L_dict)
 
