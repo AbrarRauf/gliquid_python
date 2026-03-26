@@ -19,8 +19,8 @@ def plot_ternary_system():
     # tern_sys = ["Ce", "Zn", "In"]
     # tern_sys = ["Tm", "Cu", "Ge"]
     # tern_sys = ["Fe", "Ce", "Si"]
-    tern_sys = ["Bi", "Cd", "Sn"]
-    # tern_sys = ["Zr", "Bi", "Te"]
+    # tern_sys = ["Bi", "Cd", "Sn"]
+    tern_sys = ["Zr", "Bi", "Te"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  

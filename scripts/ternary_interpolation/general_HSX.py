@@ -40,6 +40,19 @@ mpr = MPRester(mpapi_key)
 R = 8.314  # J/(mol*K)
 EV_PER_ATOM_TO_J_PER_MOL = 96485.33212
 
+REF_SS_PHASES = ("BCC", "FCC", "HCP")
+REF_SS_SPACEGROUPS = {
+    "BCC": 229,
+    "FCC": 225,
+    "HCP": 194,
+}
+REF_SS_PHASE_NAME_MARKERS = {
+    "BCC": ("bcc", "im-3m"),
+    "FCC": ("fcc", "fm-3m"),
+    "HCP": ("hcp", "p6_3/mmc"),
+}
+DEFAULT_REF_SS_OMEGAS_PATH = WORKSPACE_ROOT / "matrix_data" / "omegas.json"
+
 
 # ==============================================================================
 # SYMBOLIC VARIABLE MANAGEMENT
@@ -495,6 +508,9 @@ class GeneralInterpolation:
         param_format: str = 'linear',
         interp_scheme: str = 'linear',
         include_polymorphs: bool = True,
+        include_ref_solid_solutions: bool = False,
+        ref_solid_solutions_path: Optional[str] = None,
+        ref_ss_interp_scheme: str = 'linear',
         tau: float = 8000,
         mp_api_key: Optional[str] = None
     ):
@@ -513,6 +529,11 @@ class GeneralInterpolation:
             include_polymorphs: If True, include elemental polymorph solid
                 references from phase_transitions.json and skip duplicate MP
                 pure-element placeholders; if False, keep MP-only references.
+            include_ref_solid_solutions: If True, generate and include reference
+                solid-solution GTX clouds (BCC/FCC/HCP) from omegas data.
+            ref_solid_solutions_path: Optional path to omegas.json.
+            ref_ss_interp_scheme: Interpolation scheme for pairwise omega
+                interactions in reference solid-solution phases.
             tau: exp constant for combined format (default 8000).
             mp_api_key: Materials Project API key (uses default if None).
         """
@@ -536,7 +557,16 @@ class GeneralInterpolation:
         self.param_format = param_format
         self.interp_scheme = interp_scheme
         self.include_polymorphs = bool(include_polymorphs)
+        self.include_ref_solid_solutions = bool(include_ref_solid_solutions)
+        self.ref_solid_solutions_path = ref_solid_solutions_path
+        self.ref_ss_interp_scheme = ref_ss_interp_scheme
         self.tau = tau
+
+        if self.ref_ss_interp_scheme not in INTERPOLATION_SCHEMES:
+            raise ValueError(
+                f"Unknown ref_ss_interp_scheme '{self.ref_ss_interp_scheme}'. "
+                f"Available: {list(INTERPOLATION_SCHEMES.keys())}"
+            )
         
         # Generate binary pairs as element strings (sorted alphabetically)
         self._binary_pairs_indices = list(combinations(range(self.n_components), 2))
@@ -568,6 +598,8 @@ class GeneralInterpolation:
         self.liquid_hsx: Optional[pd.DataFrame] = None
         self.solid_hsx: Optional[pd.DataFrame] = None
         self.hsx_data: Optional[pd.DataFrame] = None
+        self.ref_solid_solution_hsx: Optional[pd.DataFrame] = None
+        self.ref_solid_solution_gtx: Optional[pd.DataFrame] = None
         self.metadata: Dict[str, any] = {}
         
         # Internal builder (created during interpolation)
@@ -577,6 +609,7 @@ class GeneralInterpolation:
         print(f"  Components: {self.n_components}")
         print(f"  Binary pairs: {self.binary_pairs}")
         print(f"  Include polymorph references: {self.include_polymorphs}")
+        print(f"  Include ref solid solutions: {self.include_ref_solid_solutions}")
     
     @property
     def mpr(self) -> MPRester:
@@ -713,6 +746,255 @@ class GeneralInterpolation:
                 break
 
         return indices
+
+    def _resolve_ref_ss_omegas_path(self) -> Path:
+        """Resolve the omegas data path for reference solid solutions."""
+        if self.ref_solid_solutions_path:
+            return Path(self.ref_solid_solutions_path)
+        return DEFAULT_REF_SS_OMEGAS_PATH
+
+    def _load_ref_ss_omegas_data(self) -> dict:
+        """Load and validate omegas.json data required for ref solid solutions."""
+        omegas_path = self._resolve_ref_ss_omegas_path()
+        if not omegas_path.exists():
+            raise FileNotFoundError(f"Reference solid-solution omegas file not found: {omegas_path}")
+
+        with open(omegas_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        if 'omegas' not in data or 'elements' not in data:
+            raise ValueError("omegas.json must contain top-level keys 'omegas' and 'elements'.")
+
+        return data
+
+    def _find_template_transition_temp_k(self, el: str, template: str, pt_map: Dict[str, dict]) -> Optional[float]:
+        """Find transition temperature for an element's template phase from phase transitions DB."""
+        elem_data = pt_map.get(el, {})
+        for phase in elem_data.get('phases', []):
+            if phase.get('phase_type') != 'solid':
+                continue
+            t_val = phase.get('transition_temperature_K')
+            if t_val is None or float(t_val) <= 0.0:
+                continue
+
+            sg_num = phase.get('spacegroup_number')
+            phase_name = str(phase.get('common_name') or phase.get('phase_name') or '').lower()
+            if sg_num == REF_SS_SPACEGROUPS[template] or any(
+                marker in phase_name for marker in REF_SS_PHASE_NAME_MARKERS[template]
+            ):
+                return float(t_val)
+
+        return None
+
+    def _compute_ref_ss_endpoint_offsets(
+        self,
+        omega_data: dict,
+        pt_map: Dict[str, dict],
+    ) -> Dict[str, Dict[str, np.ndarray]]:
+        """Compute endpoint DeltaH/DeltaS vectors for each template phase.
+
+        DeltaH values are referenced to the minimum elemental energy among templates.
+        DeltaS values use a cumulative stepwise DeltaH/T accumulation consistent with
+        fitting_demo_solid_solution.py legacy resolver behavior.
+        """
+        element_blocks = omega_data.get('elements', {})
+        per_element_template_energy: Dict[str, Dict[str, float]] = {el: {} for el in self.elements}
+
+        for template in REF_SS_PHASES:
+            template_block = element_blocks.get(template, {})
+            if not isinstance(template_block, dict):
+                continue
+            for el in self.elements:
+                if el in template_block:
+                    per_element_template_energy[el][template] = float(template_block[el])
+
+        ground_energy: Dict[str, float] = {}
+        for el in self.elements:
+            energies = list(per_element_template_energy[el].values())
+            if not energies:
+                continue
+            ground_energy[el] = min(energies)
+
+        endpoint_offsets: Dict[str, Dict[str, np.ndarray]] = {}
+        for template in REF_SS_PHASES:
+            if template not in element_blocks:
+                continue
+
+            if any(template not in per_element_template_energy[el] for el in self.elements):
+                continue
+
+            delta_h = np.zeros(self.n_components, dtype=float)
+            delta_s = np.zeros(self.n_components, dtype=float)
+
+            for i, el in enumerate(self.elements):
+                ss_energy = per_element_template_energy[el][template]
+                d_h = (ss_energy - ground_energy[el]) * EV_PER_ATOM_TO_J_PER_MOL
+                delta_h[i] = float(d_h)
+
+                t_this = self._find_template_transition_temp_k(el, template, pt_map)
+                if t_this is None or t_this <= 0.0:
+                    delta_s[i] = 0.0
+                    continue
+
+                # Cumulative stepwise entropy contribution up to current template.
+                steps = []
+                for phase_k, e_val in per_element_template_energy[el].items():
+                    t_k = self._find_template_transition_temp_k(el, phase_k, pt_map)
+                    if t_k is None or t_k <= 0.0 or t_k > t_this + 1e-12:
+                        continue
+                    d_h_k = (e_val - ground_energy[el]) * EV_PER_ATOM_TO_J_PER_MOL
+                    steps.append((float(t_k), float(d_h_k)))
+
+                if not steps:
+                    delta_s[i] = 0.0
+                    continue
+
+                steps.sort(key=lambda x: x[0])
+                s_accum = 0.0
+                prev_h = 0.0
+                for t_k, d_h_k in steps:
+                    s_accum += (d_h_k - prev_h) / t_k
+                    prev_h = d_h_k
+                delta_s[i] = float(s_accum)
+
+            endpoint_offsets[template] = {
+                'delta_h_vec': delta_h,
+                'delta_s_vec': delta_s,
+            }
+
+        return endpoint_offsets
+
+    def _ref_ss_pair_weight(self, comps: np.ndarray, i: int, j: int) -> np.ndarray:
+        """Pair interaction weighting for ref solid solutions.
+
+        For pairwise omega-only regular-solution terms, interpolation schemes map
+        to the same xi*xj prefactor; keep this method for explicit scheme gating.
+        """
+        _ = self.ref_ss_interp_scheme
+        return comps[:, i] * comps[:, j]
+
+    def compute_ref_solid_solution_hsx(self) -> pd.DataFrame:
+        """Generate reference BCC/FCC/HCP solid-solution HSX clouds from omegas data."""
+        if not self.include_ref_solid_solutions:
+            self.ref_solid_solution_hsx = pd.DataFrame(
+                columns=self.get_composition_columns() + ['H', 'S', 'Phase Name']
+            )
+            return self.ref_solid_solution_hsx
+
+        omega_raw = self._load_ref_ss_omegas_data()
+        omega_blocks = omega_raw.get('omegas', {})
+        pt_map = self._load_phase_transition_elements()
+        endpoint_offsets = self._compute_ref_ss_endpoint_offsets(omega_raw, pt_map)
+
+        comps = self._generate_composition_grid()
+        system_label = '-'.join(self.elements)
+
+        phase_frames = []
+        included_templates = []
+        for template in REF_SS_PHASES:
+            if template not in endpoint_offsets:
+                continue
+            omega_phase = omega_blocks.get(template, {})
+            if not isinstance(omega_phase, dict):
+                continue
+
+            omega_pair_map: Dict[Tuple[int, int], float] = {}
+            missing_pairs = []
+            for i, j in self._binary_pairs_indices:
+                pair_key = f"{self.elements[i]}-{self.elements[j]}"
+                if pair_key not in omega_phase:
+                    missing_pairs.append(pair_key)
+                    continue
+                omega_pair_map[(i, j)] = float(omega_phase[pair_key]) * EV_PER_ATOM_TO_J_PER_MOL
+
+            if missing_pairs:
+                self.metadata[f'ref_ss_missing_pairs_{template}'] = missing_pairs
+                continue
+
+            included_templates.append(template)
+            delta_h_vec = endpoint_offsets[template]['delta_h_vec']
+            delta_s_vec = endpoint_offsets[template]['delta_s_vec']
+
+            h_offsets = comps @ delta_h_vec
+            s_offsets = comps @ delta_s_vec
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                log_terms = np.where(comps > 0.0, comps * np.log(comps), 0.0)
+            s_conf = -R * np.sum(log_terms, axis=1)
+
+            h_mix = np.zeros(len(comps), dtype=float)
+            for (i, j), omega_val in omega_pair_map.items():
+                h_mix += omega_val * self._ref_ss_pair_weight(comps, i, j)
+
+            h_total = h_offsets + h_mix
+            s_total = s_offsets + s_conf
+
+            frame = pd.DataFrame({
+                **{f'x{k}': comps[:, k + 1] for k in range(self.n_components - 1)},
+                'H': h_total,
+                'S': s_total,
+                'Phase Name': f"{template}__{system_label}",
+            })
+            phase_frames.append(frame)
+
+        if not phase_frames:
+            raise ValueError(
+                f"No reference solid-solution templates available for system {system_label}. "
+                "Check omegas.json phase blocks and pair coverage."
+            )
+
+        self.ref_solid_solution_hsx = pd.concat(phase_frames, ignore_index=True)
+        self.ref_solid_solution_hsx = self.ref_solid_solution_hsx.drop_duplicates()
+        self.ref_solid_solution_hsx = self.ref_solid_solution_hsx.reset_index(drop=True)
+
+        self.metadata['n_ref_ss_templates_included'] = int(len(included_templates))
+        self.metadata['ref_ss_templates_included'] = included_templates
+        self.metadata['n_ref_ss_hsx_points'] = int(len(self.ref_solid_solution_hsx))
+        return self.ref_solid_solution_hsx
+
+    def _remove_terminal_solid_rows_for_ref_ss(self):
+        """Remove pure-element solid rows from solid_hsx when ref SS clouds are enabled."""
+        if self.solid_hsx is None or self.solid_hsx.empty:
+            self.metadata['n_terminal_solid_rows_removed_for_ref_ss'] = 0
+            return
+
+        comp_cols = self.get_composition_columns()
+        indep = self.solid_hsx[comp_cols].to_numpy(dtype=float)
+        dep = 1.0 - indep.sum(axis=1)
+        full = np.column_stack([dep, indep])
+
+        terminal_mask = (full > 1e-10).sum(axis=1) == 1
+        removed = int(np.sum(terminal_mask))
+        if removed > 0:
+            self.solid_hsx = self.solid_hsx.loc[~terminal_mask].reset_index(drop=True)
+        self.metadata['n_terminal_solid_rows_removed_for_ref_ss'] = removed
+
+    def compute_ref_solid_solution_gtx(self, temp_grid_k: Optional[np.ndarray] = None) -> pd.DataFrame:
+        """Expand reference solid-solution HSX points into GTX over temperature grid."""
+        if self.ref_solid_solution_hsx is None:
+            self.compute_ref_solid_solution_hsx()
+
+        if temp_grid_k is None:
+            temp_grid_k = self._generate_temperature_grid()
+
+        if self.ref_solid_solution_hsx is None or self.ref_solid_solution_hsx.empty:
+            self.ref_solid_solution_gtx = pd.DataFrame(
+                columns=self.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase Name']
+            )
+            return self.ref_solid_solution_gtx
+
+        frames = []
+        for temp_k in temp_grid_k:
+            df_t = self.ref_solid_solution_hsx.copy()
+            df_t['T_K'] = float(temp_k)
+            df_t['T_C'] = float(temp_k - 273.15)
+            df_t['G'] = df_t['H'].astype(float) - float(temp_k) * df_t['S'].astype(float)
+            keep_cols = self.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase Name']
+            frames.append(df_t[keep_cols])
+
+        self.ref_solid_solution_gtx = pd.concat(frames, ignore_index=True)
+        self.metadata['n_ref_ss_gtx_points'] = int(len(self.ref_solid_solution_gtx))
+        return self.ref_solid_solution_gtx
     
     def set_binary_params(
         self,
@@ -827,12 +1109,19 @@ class GeneralInterpolation:
         valid_mask = (indep_sums <= 1.0 + 1e-9)
         indep_valid = indep_points[valid_mask]
 
+        # Keep higher precision for non-decimal grid steps (e.g. 0.025), then
+        # recompute dependent composition from rounded independent variables.
+        indep_valid = np.round(indep_valid, 12)
         dep = 1.0 - indep_valid.sum(axis=1)
-        dep = np.clip(dep, 0.0, 1.0)
-        valid_compositions = np.column_stack([dep, indep_valid])
 
-        decimal_places = max(2, -int(np.log10(self.grid_delta)))
-        valid_compositions = np.round(valid_compositions, decimal_places)
+        # Drop only clearly non-physical points from floating point noise.
+        keep = dep >= -1e-12
+        indep_valid = indep_valid[keep]
+        dep = dep[keep]
+        dep = np.clip(dep, 0.0, 1.0)
+
+        valid_compositions = np.column_stack([dep, indep_valid])
+        valid_compositions = np.round(valid_compositions, 12)
 
         return valid_compositions
 
@@ -1133,9 +1422,10 @@ class GeneralInterpolation:
         
         This method:
         1. Loads fusion data (if not already loaded)
-        2. Computes liquid phase HSX on composition grid
+        2. Computes liquid phase GTX on composition/temperature grids
         3. Fetches solid formation energies from Materials Project
-        4. Combines into final HSX dataset
+        4. Optionally generates reference solid-solution clouds (BCC/FCC/HCP)
+        5. Combines all enabled phase datasets into final GTX
         
         Args:
             use_mp_cache: Whether to use cached MP data.
@@ -1164,13 +1454,43 @@ class GeneralInterpolation:
         self.fetch_solid_formation_energies(use_cache=use_mp_cache)
         print(f"       Found {len(self.solid_hsx)} stable solid phases")
 
+        if self.include_ref_solid_solutions:
+            print("       Generating reference solid-solution HSX clouds...")
+            self.compute_ref_solid_solution_hsx()
+            print(f"       Generated {len(self.ref_solid_solution_hsx)} reference HSX points")
+
+            self._remove_terminal_solid_rows_for_ref_ss()
+            removed = int(self.metadata.get('n_terminal_solid_rows_removed_for_ref_ss', 0))
+            print(f"       Removed {removed} pure-terminal MP solid rows (ref SS mode)")
+        else:
+            self.ref_solid_solution_hsx = pd.DataFrame(
+                columns=self.get_composition_columns() + ['H', 'S', 'Phase Name']
+            )
+            self.ref_solid_solution_gtx = pd.DataFrame(
+                columns=self.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase Name']
+            )
+            self.metadata['n_terminal_solid_rows_removed_for_ref_ss'] = 0
+
         # Step 4: Expand solids to GTX and combine.
         print("\n[4/4] Expanding solids to GTX and combining datasets...")
-        self.compute_solid_gtx()
+        temp_grid_k = self._generate_temperature_grid()
+        self.compute_solid_gtx(temp_grid_k=temp_grid_k)
 
-        self.gtx_data = pd.concat([self.liquid_gtx, self.solid_gtx], ignore_index=True)
+        frames = [self.liquid_gtx, self.solid_gtx]
+        if self.include_ref_solid_solutions:
+            self.compute_ref_solid_solution_gtx(temp_grid_k=temp_grid_k)
+            print(f"       Generated {len(self.ref_solid_solution_gtx)} reference GTX points")
+            frames.append(self.ref_solid_solution_gtx)
+
+        self.gtx_data = pd.concat(frames, ignore_index=True)
         self.gtx_data = self.gtx_data.drop_duplicates()
         self.gtx_data = self.gtx_data.reset_index(drop=True)
+
+        self.metadata['include_ref_solid_solutions'] = bool(self.include_ref_solid_solutions)
+        self.metadata['ref_ss_interp_scheme'] = self.ref_ss_interp_scheme
+        self.metadata['n_ref_ss_phases'] = int(
+            self.ref_solid_solution_gtx['Phase Name'].nunique()
+        ) if self.ref_solid_solution_gtx is not None and not self.ref_solid_solution_gtx.empty else 0
 
         
         print(f"\nInterpolation complete!")
@@ -1236,10 +1556,13 @@ class GeneralInterpolation:
             'param_format': self.param_format,
             'interp_scheme': self.interp_scheme,
             'include_polymorphs': self.include_polymorphs,
+            'include_ref_solid_solutions': self.include_ref_solid_solutions,
+            'ref_ss_interp_scheme': self.ref_ss_interp_scheme,
             'fusion_data_loaded': self.fusion_data is not None,
             'binary_params_set': self.binary_L_params is not None,
             'n_liquid_points': len(self.liquid_gtx) if self.liquid_gtx is not None else 0,
             'n_solid_phases': len(self.solid_hsx) if self.solid_hsx is not None else 0,
+            'n_ref_ss_points': len(self.ref_solid_solution_gtx) if self.ref_solid_solution_gtx is not None else 0,
             'temp_delta_k': self.temp_delta_k,
             **self.metadata
         }
@@ -1434,6 +1757,150 @@ class GeneralEquilibrium:
 
         self.equilibrium_df = pd.DataFrame(eq_rows)
         self.simplex_df = pd.DataFrame(simplex_rows)
+        return self.equilibrium_df
+
+    @staticmethod
+    def _cache_file_paths(cache_dir: str, cache_name: str) -> Dict[str, str]:
+        base = os.path.join(cache_dir, cache_name)
+        return {
+            'manifest': base + '_manifest.json',
+            'gtx': base + '_gtx.pkl.gz',
+            'equilibrium': base + '_equilibrium.pkl.gz',
+            'simplex': base + '_simplex.pkl.gz',
+        }
+
+    def _build_cache_manifest(self, vertical_simplices: Optional[bool] = None) -> Dict[str, Any]:
+        """Build metadata manifest for lower-hull cache artifacts."""
+        manifest = {
+            'version': 1,
+            'n_gtx_rows': int(len(self.gtx_data)),
+            'n_equilibrium_rows': int(len(self.equilibrium_df)) if self.equilibrium_df is not None else 0,
+            'n_simplex_rows': int(len(self.simplex_df)) if self.simplex_df is not None else 0,
+            'composition_cols': list(self.composition_cols),
+            'temp_col': self.temp_col,
+            'phase_col': self.phase_col,
+            'g_col': self.g_col,
+            'liquid_aliases': sorted(list(self.liquid_aliases)),
+            'cluster_comp_threshold': self.cluster_comp_threshold,
+            'temp_step_k': self.temp_step_k,
+            'vertical_simplices': vertical_simplices,
+        }
+        if self.temp_col in self.gtx_data.columns and not self.gtx_data.empty:
+            manifest['temp_range'] = [
+                float(self.gtx_data[self.temp_col].min()),
+                float(self.gtx_data[self.temp_col].max()),
+            ]
+        return manifest
+
+    def save_lower_hull_cache(
+        self,
+        cache_dir: str,
+        cache_name: str = 'lower_hull',
+        include_gtx: bool = True,
+        vertical_simplices: Optional[bool] = None,
+    ) -> Dict[str, str]:
+        """Persist lower-hull solve artifacts to disk.
+
+        Saves equilibrium and simplex dataframes (with simplex_id/source_row_id) and
+        optionally the GTX dataframe used as the source for source_row_id mapping.
+        """
+        if self.equilibrium_df is None or self.simplex_df is None:
+            raise ValueError("No lower-hull results to cache. Run solve() first.")
+
+        os.makedirs(cache_dir, exist_ok=True)
+        paths = self._cache_file_paths(cache_dir, cache_name)
+
+        self.equilibrium_df.to_pickle(paths['equilibrium'], compression='gzip')
+        self.simplex_df.to_pickle(paths['simplex'], compression='gzip')
+        if include_gtx:
+            self.gtx_data.to_pickle(paths['gtx'], compression='gzip')
+
+        manifest = self._build_cache_manifest(vertical_simplices=vertical_simplices)
+        manifest['include_gtx'] = bool(include_gtx)
+        with open(paths['manifest'], 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+
+        return paths
+
+    def load_lower_hull_cache(
+        self,
+        cache_dir: str,
+        cache_name: str = 'lower_hull',
+        replace_gtx_data: bool = True,
+        allow_cache_load: bool = False,
+    ) -> Dict[str, Any]:
+        """Load cached lower-hull artifacts into this solver instance."""
+        if not allow_cache_load:
+            raise RuntimeError(
+                "Cache loading is disabled by default to prevent silent reuse of stale hull data. "
+                "If you intentionally want to load cache in a downstream script, call "
+                "load_lower_hull_cache(..., allow_cache_load=True)."
+            )
+
+        paths = self._cache_file_paths(cache_dir, cache_name)
+        required = [paths['manifest'], paths['equilibrium'], paths['simplex']]
+        missing = [p for p in required if not os.path.exists(p)]
+        if missing:
+            raise FileNotFoundError(f"Missing lower-hull cache files: {missing}")
+
+        with open(paths['manifest'], 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+
+        self.equilibrium_df = pd.read_pickle(paths['equilibrium'], compression='gzip')
+        self.simplex_df = pd.read_pickle(paths['simplex'], compression='gzip')
+
+        if replace_gtx_data:
+            if not os.path.exists(paths['gtx']):
+                raise FileNotFoundError(
+                    "Cached GTX file is required when replace_gtx_data=True, "
+                    f"but not found: {paths['gtx']}"
+                )
+            self.gtx_data = pd.read_pickle(paths['gtx'], compression='gzip')
+
+        if self.equilibrium_df is not None and not self.equilibrium_df.empty:
+            max_source_row_id = int(self.equilibrium_df['source_row_id'].max())
+            if max_source_row_id >= len(self.gtx_data):
+                raise ValueError(
+                    "Cached equilibrium source_row_id exceeds GTX row count. "
+                    "Ensure you loaded matching GTX data."
+                )
+
+        return manifest
+
+    def solve_with_cache(
+        self,
+        cache_dir: str,
+        cache_name: str = 'lower_hull',
+        vertical_simplices: bool = True,
+        force_recompute: bool = False,
+        include_gtx_in_cache: bool = True,
+        use_existing_cache: bool = False,
+    ) -> pd.DataFrame:
+        """Solve lower hull with optional on-disk cache reuse.
+
+        Default behavior is recompute-first: compute solve() and write cache.
+        Cached results are loaded only when use_existing_cache=True and
+        force_recompute=False.
+        """
+        paths = self._cache_file_paths(cache_dir, cache_name)
+        cache_exists = all(os.path.exists(paths[k]) for k in ['manifest', 'equilibrium', 'simplex'])
+
+        if use_existing_cache and cache_exists and not force_recompute:
+            self.load_lower_hull_cache(
+                cache_dir=cache_dir,
+                cache_name=cache_name,
+                replace_gtx_data=bool(include_gtx_in_cache),
+                allow_cache_load=True,
+            )
+            return self.equilibrium_df
+
+        self.solve(vertical_simplices=vertical_simplices)
+        self.save_lower_hull_cache(
+            cache_dir=cache_dir,
+            cache_name=cache_name,
+            include_gtx=include_gtx_in_cache,
+            vertical_simplices=vertical_simplices,
+        )
         return self.equilibrium_df
 
     def _coexisting_solids_for_simplex_ids(self, simplex_ids: List[int]) -> List[str]:
@@ -1698,9 +2165,13 @@ if __name__ == "__main__":
     # input_elements = ["Al", "Cu", "Si", "Mg"]
     # input_elements = ["Pb", "Sn", "Cd", "Zn"]
     # input_elements = ["Pb", "Sn", "Cd", "Bi"]
-    input_elements = ["Ag", "Sn", "Bi", "Zn"]
+    # input_elements = ["Ag", "Sn", "Bi", "Zn"]
+    
+    input_elements = ["Al", "Hf", "Nb", "W"] # SS only
+
     include_polymorphs = False # Toggle False for MP-only reference mode.
-    use_all_temps_for_equilibrium_validation = True  # True -> all T slices; False -> low/mid/high only.
+    include_solid_solutions = True # Toggle True to enable reference solid-solution cloud generation (BCC/FCC/HCP).
+    use_all_temps_for_equilibrium_validation = False # True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
     binary_pairs = [
         f"{canonical_elements[i]}-{canonical_elements[j]}"
@@ -1713,9 +2184,11 @@ if __name__ == "__main__":
     print(f"Polymorph reference mode: {include_polymorphs}")
     print(f"Equilibrium validation uses all temperatures: {use_all_temps_for_equilibrium_validation}")
 
-    param_file = "data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx"
+    # param_file = "data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx" # for general runs
+    param_file = "data/high_component/ssol_fits_linear_model_legacy_refs-tau_penalty.xlsx" # for solid-solution reference mode
     print(f"Loading binary parameters from: {param_file}")
     binary_param_df = pd.read_excel(param_file)
+    print(binary_param_df)
 
     binary_L_dict: Dict[str, List[float]] = {
         pair: _load_binary_params_from_file(binary_param_df, pair)
@@ -1733,7 +2206,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         grid_delta=0.025,
         include_polymorphs=include_polymorphs,
-        temp_bounds_k=(400, 500),
+        include_ref_solid_solutions=include_solid_solutions,
     )
     interp.set_binary_params(binary_L_dict)
 
@@ -1754,6 +2227,7 @@ if __name__ == "__main__":
         elements=input_elements,
         output_dir=output_dir,
         include_polymorphs=include_polymorphs,
+        include_ref_solid_solutions=include_solid_solutions,
     )
     interp_mixed.set_binary_params(mixed_dict)
     norm = interp_mixed.binary_L_params[check_pair]
@@ -1822,6 +2296,22 @@ if __name__ == "__main__":
 
     eq_solver = GeneralEquilibrium(gtx_subset)
     eq_df = eq_solver.solve(vertical_simplices=True)
+
+    # Persist lower-hull artifacts for downstream visualization/post-processing.
+    # Keep this separate from MP cache to avoid accidental coupling.
+    lower_hull_cache_dir = os.path.join(output_dir, "lower_hull_cache")
+    os.makedirs(lower_hull_cache_dir, exist_ok=True)
+    lower_hull_cache_name = f"{'-'.join(canonical_elements)}_T{selected_temps[0]:.2f}_{selected_temps[-1]:.2f}"
+    cache_paths = eq_solver.save_lower_hull_cache(
+        cache_dir=lower_hull_cache_dir,
+        cache_name=lower_hull_cache_name,
+        include_gtx=True,
+        vertical_simplices=True,
+    )
+    print(f"[INFO] Saved lower-hull cache manifest: {cache_paths['manifest']}")
+    print(f"[INFO] Saved lower-hull equilibrium cache: {cache_paths['equilibrium']}")
+    print(f"[INFO] Saved lower-hull simplex cache: {cache_paths['simplex']}")
+    print(f"[INFO] Saved lower-hull GTX cache: {cache_paths['gtx']}")
 
     assert not eq_df.empty, "GeneralEquilibrium.solve returned no rows"
     eq_required_cols = set(interp.get_composition_columns() + ['T_K', 'T_C', 'G', 'Phase', 'simplex_id'])
