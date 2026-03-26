@@ -1340,6 +1340,14 @@ class GeneralEquilibrium:
         return min(deltas) if deltas else 0.0
 
     @staticmethod
+    def _round_sig(value: float, sig: int = 3) -> float:
+        """Round a numeric value to a fixed number of significant digits."""
+        v = float(value)
+        if not np.isfinite(v) or v == 0.0:
+            return v
+        return float(f"{v:.{sig}g}")
+
+    @staticmethod
     def _connected_components(points: np.ndarray, threshold: float) -> List[List[int]]:
         if len(points) == 0:
             return []
@@ -1505,6 +1513,13 @@ class GeneralEquilibrium:
             )
             rep = cluster_df.iloc[0]
 
+            indep_points = cluster_df[self.composition_cols].to_numpy(dtype=float)
+            full_points = [
+                [self._round_sig(float(1.0 - np.sum(row)))] + [self._round_sig(float(v)) for v in row]
+                for row in indep_points
+            ]
+            indep_points_list = [[self._round_sig(float(v)) for v in row] for row in indep_points]
+
             simplex_ids = sorted(cluster_df['simplex_id'].astype(int).unique().tolist())
             coexisting_solids = self._coexisting_solids_for_simplex_ids(simplex_ids)
             union_solids.update(coexisting_solids)
@@ -1517,6 +1532,8 @@ class GeneralEquilibrium:
                 'n_points': int(len(cluster_df)),
                 'simplex_ids': simplex_ids,
                 'coexisting_solids': coexisting_solids,
+                'cluster_points_independent': indep_points_list,
+                'cluster_points_full': full_points,
             }
             for col in self.composition_cols:
                 record[col] = float(rep[col])
@@ -1596,11 +1613,13 @@ class GeneralEquilibrium:
                 )
 
             indep_mean = liq_t[self.composition_cols].mean(axis=0)
-            indep_vals = [float(indep_mean[col]) for col in self.composition_cols]
-            dep_val = float(1.0 - np.sum(indep_vals))
+            indep_vals_raw = [float(indep_mean[col]) for col in self.composition_cols]
+            indep_vals = [self._round_sig(v) for v in indep_vals_raw]
+            dep_val_raw = float(1.0 - np.sum(indep_vals_raw))
+            dep_val = self._round_sig(dep_val_raw)
             full_comp = [dep_val] + indep_vals
 
-            if not all(v > interior_tol for v in full_comp):
+            if not all(v > interior_tol for v in [dep_val_raw] + indep_vals_raw):
                 continue
 
             simplex_ids = [simplex_id]
@@ -1681,7 +1700,8 @@ if __name__ == "__main__":
     # input_elements = ["Bi", "Cd", "Sn"]
     # input_elements = ["Al", "Cu", "Si", "Mg"]
     # input_elements = ["Pb", "Sn", "Cd", "Zn"]
-    input_elements = ["Ag", "Sn", "Bi", "Zn"]
+    input_elements = ["Pb", "Sn", "Cd", "Bi"]
+    # input_elements = ["Ag", "Sn", "Bi", "Zn"]
     include_polymorphs = False # Toggle False for MP-only reference mode.
     use_all_temps_for_equilibrium_validation = True  # True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
@@ -1716,7 +1736,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         grid_delta=0.025,
         include_polymorphs=include_polymorphs,
-        temp_bounds_k=(350, 450)
+        temp_bounds_k=(300, 400)
         # Use class defaults for grid/temp spacing and param format validation.
     )
     interp.set_binary_params(binary_L_dict)
@@ -1823,6 +1843,13 @@ if __name__ == "__main__":
     print(f"[PASS] GeneralEquilibrium solve rows: {len(eq_df)}")
     print(f"[INFO] Equilibrium liquid rows: {(eq_df['Phase'] == 'L').sum()}")
     print(f"[PASS] Lowest-liquidus clusters found: {len(inv['cluster_records'])}")
+    if len(inv['cluster_records']) > 0:
+        cluster_temps = inv['cluster_records']['T_K'].to_numpy(dtype=float)
+        same_temp = np.all(np.isclose(cluster_temps, cluster_temps[0], rtol=1e-12, atol=1e-12))
+        print(f"[INFO] All lowest-liquidus clusters share the same temperature: {same_temp}")
+        for _, row in inv['cluster_records'].iterrows():
+            cid = int(row['cluster_id'])
+            print(f"[INFO] Cluster {cid} full compositions: {row['cluster_points_full']}")
     print(f"[INFO] Coexisting solids union: {inv['coexisting_solids_union']}")
     print(f"[INFO] First-interior-liquid eutectic-like result: {eut_like}")
 
