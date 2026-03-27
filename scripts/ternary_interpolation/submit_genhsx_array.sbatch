@@ -39,7 +39,7 @@ export INCLUDE_POLYMORPHS="false"
 # export TEMP_DELTA_K="5"
 # export EQ_PROGRESS_EVERY="1"
 # export PARAM_XLSX_PATH="$REPO_ROOT/data/high_component/ssol_fits_linear_model_legacy_refs-tau_penalty.xlsx"
-# export REF_SS_OMEGAS_PATH="$REPO_ROOT/matrix_data/omegas.json"
+# export REF_SS_OMEGAS_PATH="$REPO_ROOT/data/high_component/omegas.json"
 # export OUTPUT_ROOT="$REPO_ROOT/all_dumps/hpc_runs"
 
 if [[ ! -f "$BLOCK_LIST_FILE" ]]; then
