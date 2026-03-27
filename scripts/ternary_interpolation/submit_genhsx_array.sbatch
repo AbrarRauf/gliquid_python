@@ -23,7 +23,14 @@ conda activate gliquid-env
 # Update these paths before submission.
 REPO_ROOT=/home/arauf/gliquid_python
 EXEC_SCRIPT="$REPO_ROOT/scripts/ternary_interpolation/exec_genhsx.py"
-BLOCK_LIST_FILE="$REPO_ROOT/all_dumps/hpc_runs/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
+RUN_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
+
+# Prefer block list from submission directory (scratch workflow),
+# fallback to repo path if not present.
+BLOCK_LIST_FILE="$RUN_ROOT/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
+if [[ ! -f "$BLOCK_LIST_FILE" ]]; then
+  BLOCK_LIST_FILE="$REPO_ROOT/all_dumps/hpc_runs/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
+fi
 
 # Provide target system per job submission.
 export SYSTEM_ELEMENTS="Al,Hf,Nb,W"
@@ -33,6 +40,10 @@ export USE_MP_CACHE="false"
 export VERTICAL_SIMPLICES="false"
 export INCLUDE_REF_SS="true"
 export INCLUDE_POLYMORPHS="false"
+
+# Force all generated dumps/caches into the submission directory (scratch).
+export OUTPUT_ROOT="$RUN_ROOT/all_dumps/hpc_runs"
+mkdir -p "$OUTPUT_ROOT"
 
 # Optional tuning overrides.
 # export GRID_DELTA="0.025"
@@ -62,6 +73,8 @@ echo "System elements: $SYSTEM_ELEMENTS"
 echo "Temperature block (K): $TEMP_BLOCK_K"
 echo "Block list: $BLOCK_LIST_FILE"
 echo "Exec script: $EXEC_SCRIPT"
+echo "Run root: $RUN_ROOT"
+echo "OUTPUT_ROOT: $OUTPUT_ROOT"
 echo "============================================================"
 
 cd "$REPO_ROOT" || { echo "Could not enter $REPO_ROOT"; exit 1; }

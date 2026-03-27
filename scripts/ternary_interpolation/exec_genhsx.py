@@ -15,6 +15,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
 
 from general_HSX import GeneralEquilibrium, GeneralInterpolation
@@ -198,6 +199,25 @@ def main() -> None:
 		progress_every=eq_progress_every,
 	)
 
+	print("\n[2b/2] Computing invariant diagnostics...")
+	inv = eq_solver.get_lowest_liquidus_clusters()
+	eut_like = eq_solver.get_first_interior_liquid_eutectic(interior_tol=1e-6)
+
+	n_liq_eq = int((eq_df["Phase"] == "L").sum()) if "Phase" in eq_df.columns else 0
+	print(f"[INFO] Equilibrium liquid rows: {n_liq_eq}")
+	cluster_records = inv.get("cluster_records", pd.DataFrame())
+	cluster_count = int(len(cluster_records)) if isinstance(cluster_records, pd.DataFrame) else 0
+	print(f"[PASS] Lowest-liquidus clusters found: {cluster_count}")
+	if cluster_count > 0 and isinstance(cluster_records, pd.DataFrame):
+		cluster_temps = cluster_records["T_K"].to_numpy(dtype=float)
+		same_temp = bool(np.all(np.isclose(cluster_temps, cluster_temps[0], rtol=1e-12, atol=1e-12)))
+		print(f"[INFO] All lowest-liquidus clusters share the same temperature: {same_temp}")
+		for _, row in cluster_records.iterrows():
+			cid = int(row["cluster_id"])
+			print(f"[INFO] Cluster {cid} full compositions: {row['cluster_points_full']}")
+	print(f"[INFO] Coexisting solids union: {inv.get('coexisting_solids_union', [])}")
+	print(f"[INFO] First-interior-liquid eutectic-like result: {eut_like}")
+
 	lower_hull_cache_dir = run_dir / "lower_hull_cache"
 	lower_hull_cache_dir.mkdir(parents=True, exist_ok=True)
 	cache_name = f"{system_name}_{block_label}"
@@ -209,6 +229,9 @@ def main() -> None:
 	)
 
 	progress = eq_solver.get_temperature_progress()
+	inv_serializable = dict(inv)
+	if isinstance(inv_serializable.get("cluster_records"), pd.DataFrame):
+		inv_serializable["cluster_records"] = inv_serializable["cluster_records"].to_dict(orient="records")
 	summary = {
 		"timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
 		"system_input": elements,
@@ -223,7 +246,10 @@ def main() -> None:
 		"n_gtx_rows": int(len(interp.gtx_data) if interp.gtx_data is not None else 0),
 		"n_equilibrium_rows": int(len(eq_df)),
 		"n_simplex_rows": int(len(eq_solver.simplex_df) if eq_solver.simplex_df is not None else 0),
+		"n_equilibrium_liquid_rows": n_liq_eq,
 		"temperature_progress": progress,
+		"lowest_liquidus_clusters": inv_serializable,
+		"first_interior_liquid_eutectic": eut_like,
 		"cache_paths": cache_paths,
 	}
 
