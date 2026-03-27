@@ -87,6 +87,7 @@ out_dir.mkdir(parents=True, exist_ok=True)
 block_file = out_dir / f"temp_blocks_{system_tag}_{int(block_size)}K.txt"
 
 with open(block_file, 'w', encoding='utf-8') as f:
+    f.write(f"#SYSTEM_ELEMENTS={','.join(els)}\n")
     for a, b in blocks:
         f.write(f"{a:.2f},{b:.2f}\n")
 
@@ -105,11 +106,15 @@ print(f"Block size (K): {block_size:.2f}")
 print(f"Number of blocks: {n}")
 print(f"SBATCH array argument: --array={array_expr}")
 print(f"Block list file: {block_file}")
+print("Block list format:")
+print("  line 1: #SYSTEM_ELEMENTS=<comma-separated elements>")
+print("  line 2+: Tmin_K,Tmax_K")
 print("\nFirst 5 blocks:")
 for i, (a, b) in enumerate(blocks[:5]):
     print(f"  {i}: {a:.2f},{b:.2f}")
 
 print("\nExample line selection in sbatch:")
-print('  TEMP_BLOCK_K=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "' + str(block_file) + '")')
+print('  SYSTEM_ELEMENTS=$(sed -n "1p" "' + str(block_file) + '" | sed "s/^#SYSTEM_ELEMENTS=//")')
+print('  TEMP_BLOCK_K=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "' + str(block_file) + '")')
 print("=" * 72)
 PY

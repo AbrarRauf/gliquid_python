@@ -32,8 +32,7 @@ if [[ ! -f "$BLOCK_LIST_FILE" ]]; then
   BLOCK_LIST_FILE="$REPO_ROOT/all_dumps/hpc_runs/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
 fi
 
-# Provide target system per job submission.
-export SYSTEM_ELEMENTS="Al,Hf,Nb,W"
+# SYSTEM_ELEMENTS will be read from the block-list header line.
 
 # Cluster defaults requested for these runs.
 export USE_MP_CACHE="false"
@@ -58,7 +57,20 @@ if [[ ! -f "$BLOCK_LIST_FILE" ]]; then
   exit 1
 fi
 
-TEMP_BLOCK_K=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$BLOCK_LIST_FILE")
+SYSTEM_HEADER=$(sed -n "1p" "$BLOCK_LIST_FILE")
+if [[ "$SYSTEM_HEADER" == \#SYSTEM_ELEMENTS=* ]]; then
+  export SYSTEM_ELEMENTS="${SYSTEM_HEADER#\#SYSTEM_ELEMENTS=}"
+else
+  echo "ERROR: Block list is missing '#SYSTEM_ELEMENTS=...' header on line 1"
+  exit 1
+fi
+
+if [[ -z "${SYSTEM_ELEMENTS:-}" ]]; then
+  echo "ERROR: Parsed SYSTEM_ELEMENTS is empty from block list header"
+  exit 1
+fi
+
+TEMP_BLOCK_K=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "$BLOCK_LIST_FILE")
 if [[ -z "${TEMP_BLOCK_K:-}" ]]; then
   echo "ERROR: No temperature block found for SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID"
   exit 1
