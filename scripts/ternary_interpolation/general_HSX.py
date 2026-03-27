@@ -1600,6 +1600,13 @@ class GeneralEquilibrium:
         self.equilibrium_df: Optional[pd.DataFrame] = None
         self.simplex_df: Optional[pd.DataFrame] = None
 
+        # Temperature-sweep progress tracking.
+        self.total_temperature_slices: int = 0
+        self.processed_temperature_slices: List[float] = []
+        self.successful_temperature_slices: List[float] = []
+        self.failed_temperature_slices: List[float] = []
+        self.temperature_slice_status: Dict[float, str] = {}
+
         self._validate_input()
 
     @staticmethod
@@ -1699,8 +1706,19 @@ class GeneralEquilibrium:
             components.append(sorted(comp))
         return components
 
-    def solve(self, vertical_simplices: bool = True) -> pd.DataFrame:
-        """Solve lower-hull equilibrium for each temperature slice."""
+    def solve(
+        self,
+        vertical_simplices: bool = True,
+        print_progress: bool = True,
+        progress_every: int = 1,
+    ) -> pd.DataFrame:
+        """Solve lower-hull equilibrium for each temperature slice.
+
+        Args:
+            vertical_simplices: Forwarded to gliq_lowerhull3.
+            print_progress: If True, print incremental temperature-slice progress.
+            progress_every: Print cadence in number of processed slices.
+        """
         work = self.gtx_data.reset_index(drop=True).copy()
         work['source_row_id'] = np.arange(len(work), dtype=int)
 
@@ -1708,17 +1726,52 @@ class GeneralEquilibrium:
         simplex_rows = []
         simplex_counter = 0
 
-        for temp_val, df_t in work.groupby(self.temp_col, sort=True):
+        grouped = work.groupby(self.temp_col, sort=True)
+        self.total_temperature_slices = int(grouped.ngroups)
+        self.processed_temperature_slices = []
+        self.successful_temperature_slices = []
+        self.failed_temperature_slices = []
+        self.temperature_slice_status = {}
+
+        progress_every = max(1, int(progress_every))
+
+        if print_progress:
+            print(f"[EQ] Starting lower-hull solve over {self.total_temperature_slices} temperature slices")
+
+        for idx, (temp_val, df_t) in enumerate(grouped, start=1):
+            t_val = float(temp_val)
+            self.processed_temperature_slices.append(t_val)
             df_t = df_t.reset_index(drop=True)
             points = df_t[self.composition_cols + [self.g_col]].to_numpy(dtype=float)
 
             try:
                 simplices = gliq_lowerhull3(points, vertical_simplices=vertical_simplices)
             except QhullError:
+                self.failed_temperature_slices.append(t_val)
+                self.temperature_slice_status[t_val] = 'qhull_error'
+                if print_progress and (idx % progress_every == 0 or idx == self.total_temperature_slices):
+                    print(
+                        f"[EQ] {idx}/{self.total_temperature_slices} slices | "
+                        f"T={t_val:.2f} K | status=qhull_error | "
+                        f"success={len(self.successful_temperature_slices)} | "
+                        f"failed={len(self.failed_temperature_slices)}"
+                    )
                 continue
 
             if simplices is None or len(simplices) == 0:
+                self.failed_temperature_slices.append(t_val)
+                self.temperature_slice_status[t_val] = 'no_simplices'
+                if print_progress and (idx % progress_every == 0 or idx == self.total_temperature_slices):
+                    print(
+                        f"[EQ] {idx}/{self.total_temperature_slices} slices | "
+                        f"T={t_val:.2f} K | status=no_simplices | "
+                        f"success={len(self.successful_temperature_slices)} | "
+                        f"failed={len(self.failed_temperature_slices)}"
+                    )
                 continue
+
+            self.successful_temperature_slices.append(t_val)
+            self.temperature_slice_status[t_val] = 'ok'
 
             for simplex in simplices:
                 simplex_id = simplex_counter
@@ -1755,9 +1808,39 @@ class GeneralEquilibrium:
                     eq_row['source_row_id'] = int(row['source_row_id'])
                     eq_rows.append(eq_row)
 
+            if print_progress and (idx % progress_every == 0 or idx == self.total_temperature_slices):
+                print(
+                    f"[EQ] {idx}/{self.total_temperature_slices} slices | "
+                    f"T={t_val:.2f} K | status=ok | "
+                    f"success={len(self.successful_temperature_slices)} | "
+                    f"failed={len(self.failed_temperature_slices)}"
+                )
+
         self.equilibrium_df = pd.DataFrame(eq_rows)
         self.simplex_df = pd.DataFrame(simplex_rows)
+
+        if print_progress:
+            print(
+                f"[EQ] Completed lower-hull sweep: "
+                f"processed={len(self.processed_temperature_slices)}/{self.total_temperature_slices}, "
+                f"success={len(self.successful_temperature_slices)}, "
+                f"failed={len(self.failed_temperature_slices)}"
+            )
+
         return self.equilibrium_df
+
+    def get_temperature_progress(self) -> Dict[str, Any]:
+        """Return tracked per-temperature solve progress for downstream reporting."""
+        return {
+            'total_temperature_slices': int(self.total_temperature_slices),
+            'n_processed': int(len(self.processed_temperature_slices)),
+            'n_successful': int(len(self.successful_temperature_slices)),
+            'n_failed': int(len(self.failed_temperature_slices)),
+            'processed_temperature_slices': list(self.processed_temperature_slices),
+            'successful_temperature_slices': list(self.successful_temperature_slices),
+            'failed_temperature_slices': list(self.failed_temperature_slices),
+            'temperature_slice_status': dict(self.temperature_slice_status),
+        }
 
     @staticmethod
     def _cache_file_paths(cache_dir: str, cache_name: str) -> Dict[str, str]:
@@ -2167,11 +2250,11 @@ if __name__ == "__main__":
     # input_elements = ["Pb", "Sn", "Cd", "Bi"]
     # input_elements = ["Ag", "Sn", "Bi", "Zn"]
     
-    input_elements = ["Al", "Hf", "Nb", "W"] # SS only
+    input_elements = ["Zr", "Hf", "Nb", "W"] # SS only
 
     include_polymorphs = False # Toggle False for MP-only reference mode.
     include_solid_solutions = True # Toggle True to enable reference solid-solution cloud generation (BCC/FCC/HCP).
-    use_all_temps_for_equilibrium_validation = False # True -> all T slices; False -> low/mid/high only.
+    use_all_temps_for_equilibrium_validation = True# True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
     binary_pairs = [
         f"{canonical_elements[i]}-{canonical_elements[j]}"
@@ -2207,6 +2290,7 @@ if __name__ == "__main__":
         grid_delta=0.025,
         include_polymorphs=include_polymorphs,
         include_ref_solid_solutions=include_solid_solutions,
+        temp_delta_k=10.0,
     )
     interp.set_binary_params(binary_L_dict)
 
@@ -2228,6 +2312,7 @@ if __name__ == "__main__":
         output_dir=output_dir,
         include_polymorphs=include_polymorphs,
         include_ref_solid_solutions=include_solid_solutions,
+        temp_delta_k=10.0,
     )
     interp_mixed.set_binary_params(mixed_dict)
     norm = interp_mixed.binary_L_params[check_pair]
