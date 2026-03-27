@@ -25,12 +25,25 @@ REPO_ROOT=/home/arauf/gliquid_python
 EXEC_SCRIPT="$REPO_ROOT/scripts/ternary_interpolation/exec_genhsx.py"
 RUN_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
 
-# Prefer block list from submission directory (scratch workflow),
-# fallback to repo path if not present.
-BLOCK_LIST_FILE="$RUN_ROOT/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
-if [[ ! -f "$BLOCK_LIST_FILE" ]]; then
-  BLOCK_LIST_FILE="$REPO_ROOT/all_dumps/hpc_runs/block_lists/temp_blocks_Al-Hf-Nb-W_100K.txt"
+# Auto-detect the temp block list directly in submit directory.
+# Expect exactly one file matching temp_blocks_*.txt.
+shopt -s nullglob
+block_files=("$RUN_ROOT"/temp_blocks_*.txt)
+shopt -u nullglob
+
+if [[ ${#block_files[@]} -eq 0 ]]; then
+  echo "ERROR: No temp_blocks_*.txt found in submit directory: $RUN_ROOT"
+  exit 1
 fi
+
+if [[ ${#block_files[@]} -gt 1 ]]; then
+  echo "ERROR: Multiple temp_blocks_*.txt files found in submit directory: $RUN_ROOT"
+  printf '  %s\n' "${block_files[@]}"
+  echo "Keep only one temp_blocks_*.txt file in submit directory before submitting."
+  exit 1
+fi
+
+BLOCK_LIST_FILE="${block_files[0]}"
 
 # SYSTEM_ELEMENTS will be read from the block-list header line.
 
