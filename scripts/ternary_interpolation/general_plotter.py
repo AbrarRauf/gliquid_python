@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from scipy.spatial import cKDTree
+
+
+SS_FIXED_COLORS = {
+	"BCC": "#d7263d",
+	"FCC": "#1b9aaa",
+	"HCP": "#f4a259",
+}
 
 
 def _infer_comp_cols(df: pd.DataFrame) -> List[str]:
@@ -638,6 +648,663 @@ class GeneralHSXPostprocess:
 		}
 
 
+class PhaseBoundaryPlotter:
+	"""Slice and plot stitched phase-boundary equilibrium data.
+
+	This class assumes the reduced data format produced by
+	GeneralHSXPostprocess.save_phase_boundary_equilibrium(...).
+	"""
+
+	def __init__(
+		self,
+		equilibrium_df: pd.DataFrame,
+		composition_cols: Optional[Sequence[str]] = None,
+		element_names: Optional[Sequence[str]] = None,
+		liquid_aliases: Sequence[str] = ("L", "LIQUID"),
+		phase_colors: Optional[Dict[str, str]] = None,
+		solution_phase_pattern: str = r"(FCC|BCC|HCP|A1|A2|A3|A4|SOLUTION|_SS|\bSS\b)",
+	):
+		self.equilibrium_df = equilibrium_df.copy().reset_index(drop=True)
+		self.composition_cols = list(composition_cols) if composition_cols else _infer_comp_cols(self.equilibrium_df)
+		self.liquid_aliases = tuple(liquid_aliases)
+		self.solution_phase_re = re.compile(solution_phase_pattern, flags=re.IGNORECASE)
+		self.phase_colors = dict(phase_colors or {})
+
+		self.n_indep_components = len(self.composition_cols)
+		self.n_total_components = self.n_indep_components + 1
+
+		self.element_names = list(element_names) if element_names is not None else None
+		if self.element_names is not None and len(self.element_names) != self.n_total_components:
+			raise ValueError(
+				"element_names length must equal total component count "
+				f"({self.n_total_components}), got {len(self.element_names)}"
+			)
+
+		validation = self.validate_schema()
+		if not validation["valid"]:
+			raise ValueError("Invalid equilibrium dataframe schema: " + "; ".join(validation["errors"]))
+
+		self._df_full = self._prepare_full_composition_df(self.equilibrium_df)
+		self._full_comp_cols = ["x_dep"] + self.composition_cols
+
+	def validate_schema(self) -> Dict[str, Any]:
+		errors: List[str] = []
+		required_cols = ["Phase", "T_K"] + self.composition_cols
+		missing = [c for c in required_cols if c not in self.equilibrium_df.columns]
+		if missing:
+			errors.append(f"Missing required columns: {missing}")
+
+		if self.equilibrium_df.empty:
+			errors.append("equilibrium_df is empty")
+
+		for col in self.composition_cols + ["T_K"]:
+			if col in self.equilibrium_df.columns:
+				if not np.issubdtype(self.equilibrium_df[col].dtype, np.number):
+					errors.append(f"Column {col} must be numeric")
+
+		return {"valid": len(errors) == 0, "errors": errors}
+
+	def validate_composition_integrity(self, tolerance: float = 1e-6) -> Dict[str, Any]:
+		x_dep = 1.0 - self.equilibrium_df[self.composition_cols].sum(axis=1).to_numpy(dtype=float)
+		invalid_mask = (x_dep < -float(tolerance)) | (x_dep > 1.0 + float(tolerance))
+		return {
+			"n_rows": int(len(self.equilibrium_df)),
+			"n_invalid_rows": int(np.sum(invalid_mask)),
+			"min_x_dep": float(np.min(x_dep)) if len(x_dep) else None,
+			"max_x_dep": float(np.max(x_dep)) if len(x_dep) else None,
+		}
+
+	def _prepare_full_composition_df(self, df: pd.DataFrame) -> pd.DataFrame:
+		out = df.copy()
+		x_dep = 1.0 - out[self.composition_cols].sum(axis=1)
+		out["x_dep"] = x_dep.astype(float)
+		return out
+
+	def _component_label(self, idx: int) -> str:
+		if self.element_names is not None:
+			return str(self.element_names[idx])
+		if idx == 0:
+			return "dep"
+		return f"x{idx - 1}"
+
+	def _phase_is_solution(self, phase: Any) -> bool:
+		p = str(phase)
+		if _phase_is_liquid(p, self.liquid_aliases):
+			return False
+		return self.solution_phase_re.search(p) is not None
+
+	def _ensure_quaternary(self):
+		if self.n_total_components != 4:
+			raise ValueError(
+				f"Quaternary plotting requires 4 total components, got {self.n_total_components}"
+			)
+
+	def _resolve_tol(self, tol: Optional[float]) -> float:
+		if tol is not None:
+			return float(max(0.0, tol))
+		base = _infer_grid_delta(self.equilibrium_df, self.composition_cols)
+		if base > 0.0:
+			return float(max(base * 0.5, 1e-6))
+		return 1e-6
+
+	def _quantize_composition_for_grouping(self, df: pd.DataFrame, tol: float) -> pd.Series:
+		t = self._resolve_tol(tol)
+		arr = df[self._full_comp_cols].to_numpy(dtype=float)
+		q = np.round(arr / t).astype(np.int64)
+		keys = [tuple(row.tolist()) for row in q]
+		return pd.Series(keys, index=df.index)
+
+	def get_phase_list(self, include_liquid: bool = True) -> List[str]:
+		phases = self.equilibrium_df["Phase"].astype(str)
+		if include_liquid:
+			return sorted(phases.unique().tolist())
+		return sorted([p for p in phases.unique().tolist() if not _phase_is_liquid(p, self.liquid_aliases)])
+
+	def get_temperature_statistics(self) -> Dict[str, Any]:
+		t = self.equilibrium_df["T_K"].to_numpy(dtype=float)
+		return {
+			"T_min_K": float(np.min(t)) if len(t) else None,
+			"T_max_K": float(np.max(t)) if len(t) else None,
+			"n_unique_T": int(self.equilibrium_df["T_K"].nunique()),
+		}
+
+	def _full_component_names(self) -> List[str]:
+		if self.element_names is not None:
+			return [str(v) for v in self.element_names]
+		return ["dep", "x0", "x1", "x2"]
+
+	def _phase_color_map(self, phases: Sequence[str]) -> Dict[str, str]:
+		reserved = {"cornflowerblue"}
+		reserved.update(SS_FIXED_COLORS.values())
+		palette = [c for c in px.colors.qualitative.Dark24 if c not in reserved]
+		if not palette:
+			palette = px.colors.qualitative.Dark24
+
+		out = dict(self.phase_colors)
+		used = set()
+		next_i = 0
+
+		for p in sorted({str(v) for v in phases}):
+			p_str = str(p)
+			p_up = p_str.upper()
+
+			# Hard conventions: liquid and SS families are fixed.
+			if _phase_is_liquid(p_str, self.liquid_aliases):
+				out[p_str] = "cornflowerblue"
+				used.add("cornflowerblue")
+				continue
+			if "BCC" in p_up:
+				out[p_str] = SS_FIXED_COLORS["BCC"]
+				used.add(SS_FIXED_COLORS["BCC"])
+				continue
+			if "FCC" in p_up:
+				out[p_str] = SS_FIXED_COLORS["FCC"]
+				used.add(SS_FIXED_COLORS["FCC"])
+				continue
+			if "HCP" in p_up:
+				out[p_str] = SS_FIXED_COLORS["HCP"]
+				used.add(SS_FIXED_COLORS["HCP"])
+				continue
+
+			# Preserve explicit user colors for intermetallics if they do not violate reserved colors.
+			if p_str in out and out[p_str] not in reserved:
+				used.add(out[p_str])
+				continue
+
+			while next_i < len(palette) and palette[next_i] in used:
+				next_i += 1
+			if next_i >= len(palette):
+				next_i = 0
+			out[p_str] = palette[next_i]
+			used.add(palette[next_i])
+			next_i += 1
+		return out
+
+	def _full_component_df(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+		base = self._df_full if df is None else self._prepare_full_composition_df(df)
+		name_map = dict(zip(self._full_comp_cols, self._full_component_names()))
+		out = base.copy()
+		for src, dst in name_map.items():
+			out[dst] = out[src].astype(float)
+		return out
+
+	@staticmethod
+	def _snap_to_grid(value: float, grid_delta: float) -> float:
+		if grid_delta <= 0.0:
+			return float(value)
+		return float(np.round(float(value) / grid_delta) * grid_delta)
+
+	def _nearest_available_value(self, series: pd.Series, target: float) -> float:
+		vals = np.sort(series.dropna().unique().astype(float))
+		if len(vals) == 0:
+			return float(target)
+		idx = int(np.argmin(np.abs(vals - float(target))))
+		return float(vals[idx])
+
+	def filter_by_fixed_components(
+		self,
+		fixed_components: Dict[str, float],
+		tolerance: Optional[float] = None,
+	) -> pd.DataFrame:
+		df = self._full_component_df()
+		tol = self._resolve_tol(tolerance)
+		mask = np.ones(len(df), dtype=bool)
+		for comp_name, target in fixed_components.items():
+			if comp_name not in df.columns:
+				raise ValueError(f"Unknown component name in fixed_components: {comp_name}")
+			mask &= np.abs(df[comp_name].to_numpy(dtype=float) - float(target)) <= tol
+		out = df.loc[mask].copy().reset_index(drop=True)
+		if out.empty:
+			raise ValueError(
+				f"No rows found for fixed components {fixed_components} with tolerance {tol}."
+			)
+		return out
+
+	def plot_binary_slice_tx(
+		self,
+		comp_a: str,
+		comp_b: str,
+		fixed_components: Dict[str, float],
+		tolerance: Optional[float] = None,
+		title: Optional[str] = None,
+	) -> go.Figure:
+		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		if comp_a not in df.columns or comp_b not in df.columns:
+			raise ValueError(f"Binary components must exist in dataframe columns: {comp_a}, {comp_b}")
+
+		pair_sum = df[comp_a].to_numpy(dtype=float) + df[comp_b].to_numpy(dtype=float)
+		valid = pair_sum > 1e-12
+		df = df.loc[valid].copy()
+		pair_sum = pair_sum[valid]
+		if df.empty:
+			raise ValueError(f"No valid rows for binary ratio {comp_a}/({comp_a}+{comp_b}) after filtering.")
+
+		df["x_pair"] = df[comp_a].to_numpy(dtype=float) / pair_sum
+		color_map = self._phase_color_map(df["Phase"].astype(str).tolist())
+		fig = px.scatter(
+			df,
+			x="x_pair",
+			y="T_K",
+			color="Phase",
+			color_discrete_map=color_map,
+			title=title or f"Binary Slice {comp_a}-{comp_b}",
+			hover_data={
+				comp_a: ":.4f",
+				comp_b: ":.4f",
+				"T_K": ":.2f",
+				"x_pair": ":.4f",
+			},
+		)
+		fig.update_traces(marker=dict(size=6, opacity=0.8))
+		fig.update_layout(
+			xaxis_title=f"x_{comp_a} / (x_{comp_a} + x_{comp_b})",
+			yaxis_title="T [K]",
+			plot_bgcolor="white",
+		)
+		return fig
+
+	def plot_ternary_slice(
+		self,
+		comp_a: str,
+		comp_b: str,
+		comp_c: str,
+		fixed_components: Dict[str, float],
+		tolerance: Optional[float] = None,
+		title: Optional[str] = None,
+		color_by: str = "Phase",
+	) -> go.Figure:
+		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		for col in [comp_a, comp_b, comp_c]:
+			if col not in df.columns:
+				raise ValueError(f"Ternary component not found: {col}")
+
+		s = df[comp_a].to_numpy(dtype=float) + df[comp_b].to_numpy(dtype=float) + df[comp_c].to_numpy(dtype=float)
+		valid = s > 1e-12
+		df = df.loc[valid].copy()
+		s = s[valid]
+		if df.empty:
+			raise ValueError(f"No valid ternary rows for {comp_a}-{comp_b}-{comp_c} after filtering.")
+
+		df["a_norm"] = df[comp_a].to_numpy(dtype=float) / s
+		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
+		df["c_norm"] = df[comp_c].to_numpy(dtype=float) / s
+
+		fig = go.Figure()
+		if color_by == "Phase":
+			color_map = self._phase_color_map(df["Phase"].astype(str).tolist())
+			for phase_name, g in df.groupby("Phase"):
+				fig.add_trace(
+					go.Scatter3d(
+						x=g["a_norm"],
+						y=g["b_norm"],
+						z=g["T_K"],
+						mode="markers",
+						name=str(phase_name),
+						marker=dict(size=4, color=color_map[str(phase_name)], opacity=0.8),
+						customdata=np.column_stack([
+							g[comp_a].to_numpy(dtype=float),
+							g[comp_b].to_numpy(dtype=float),
+							g[comp_c].to_numpy(dtype=float),
+							g["c_norm"].to_numpy(dtype=float),
+						]),
+						hovertemplate=(
+							f"Phase={phase_name}<br>"
+							"T=%{z:.2f} K<br>"
+							f"{comp_a}=%{{customdata[0]:.4f}}<br>"
+							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
+							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
+							f"{comp_c}_norm=%{{customdata[3]:.4f}}<extra></extra>"
+						),
+					)
+				)
+		else:
+			fig.add_trace(
+				go.Scatter3d(
+					x=df["a_norm"],
+					y=df["b_norm"],
+					z=df["T_K"],
+					mode="markers",
+					name=color_by,
+					marker=dict(
+						size=4,
+						color=df[color_by].to_numpy(dtype=float),
+						colorscale="Viridis",
+						showscale=True,
+						opacity=0.8,
+					),
+				)
+			)
+
+		# Draw base simplex triangle at minimum temperature for orientation.
+		tmin = float(df["T_K"].min()) if not df.empty else 0.0
+		fig.add_trace(
+			go.Scatter3d(
+				x=[0.0, 1.0, 0.0, 0.0],
+				y=[0.0, 0.0, 1.0, 0.0],
+				z=[tmin, tmin, tmin, tmin],
+				mode="lines",
+				line=dict(color="black", width=3),
+				name="slice base",
+				showlegend=False,
+			)
+		)
+
+		fig.update_layout(
+			title=title or f"Ternary Slice 3D ({comp_a}-{comp_b}-{comp_c})",
+			scene=dict(
+				xaxis=dict(title=f"{comp_a} (normalized)"),
+				yaxis=dict(title=f"{comp_b} (normalized)"),
+				zaxis=dict(title="T [K]"),
+			),
+			margin=dict(l=0, r=0, b=0, t=40),
+		)
+		return fig
+
+	def plot_quaternary_phase_tetrahedral(
+		self,
+		phase_filter: str,
+		title: Optional[str] = None,
+		marker_size: float = 5.0,
+		colorscale: str = "Viridis",
+	) -> go.Figure:
+		self._ensure_quaternary()
+		df = self._df_full.copy()
+		if str(phase_filter).strip().upper() in {"L", "LIQUID"}:
+			df = df[df["Phase"].apply(lambda p: _phase_is_liquid(p, self.liquid_aliases))].copy()
+		else:
+			df = df[df["Phase"].astype(str).str.upper() == str(phase_filter).strip().upper()].copy()
+		if df.empty:
+			raise ValueError(f"No rows available for phase filter: {phase_filter}")
+
+		arr4 = df[self._full_comp_cols].to_numpy(dtype=float)
+		xyz = self._barycentric_to_tetrahedral(arr4)
+		hover = np.column_stack([
+			df["Phase"].astype(str).to_numpy(),
+			df["T_K"].to_numpy(dtype=float),
+			arr4,
+		])
+
+		fig = go.Figure()
+		fig.add_trace(
+			go.Scatter3d(
+				x=xyz[:, 0],
+				y=xyz[:, 1],
+				z=xyz[:, 2],
+				mode="markers",
+				marker=dict(
+					size=float(marker_size),
+					color=df["T_K"].to_numpy(dtype=float),
+					colorscale=colorscale,
+					showscale=True,
+					colorbar=dict(title="T [K]"),
+					opacity=0.85,
+				),
+				customdata=hover,
+				hovertemplate=(
+					"Phase=%{customdata[0]}<br>"
+					"T=%{customdata[1]:.2f} K<br>"
+					"x_dep=%{customdata[2]:.4f}<br>"
+					"x0=%{customdata[3]:.4f}<br>"
+					"x1=%{customdata[4]:.4f}<br>"
+					"x2=%{customdata[5]:.4f}<extra></extra>"
+				),
+				name=f"{phase_filter} points",
+			)
+		)
+		self._add_tetrahedron_wireframe(fig)
+
+		labels = [self._component_label(i) for i in range(4)]
+		fig.add_trace(go.Scatter3d(x=[0.0], y=[0.0], z=[0.0], mode="text", text=[labels[0]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[1.0], y=[0.0], z=[0.0], mode="text", text=[labels[1]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[0.5], y=[np.sqrt(3.0) / 2.0], z=[0.0], mode="text", text=[labels[2]], showlegend=False))
+		fig.add_trace(
+			go.Scatter3d(
+				x=[0.5], y=[np.sqrt(3.0) / 6.0], z=[np.sqrt(2.0 / 3.0)], mode="text", text=[labels[3]], showlegend=False
+			)
+		)
+
+		fig.update_layout(
+			title=title or f"Quaternary {phase_filter} Temperature Map",
+			scene=dict(
+				xaxis=dict(visible=False),
+				yaxis=dict(visible=False),
+				zaxis=dict(visible=False),
+				aspectmode="data",
+			),
+			margin=dict(l=0, r=0, b=0, t=40),
+		)
+		return fig
+
+	def extract_intermetallic_single_composition_maxima(
+		self,
+		composition_tol: Optional[float] = None,
+		include_solution_phases: bool = False,
+	) -> pd.DataFrame:
+		"""Return one row per single-composition phase at its highest temperature."""
+		self._ensure_quaternary()
+		df = self._df_full.copy()
+
+		# Intermetallic view excludes liquid and, by default, excludes solution phases.
+		non_liquid_mask = ~df["Phase"].apply(lambda p: _phase_is_liquid(p, self.liquid_aliases))
+		df = df[non_liquid_mask].copy()
+		if not include_solution_phases:
+			df = df[~df["Phase"].apply(self._phase_is_solution)].copy()
+
+		if df.empty:
+			return df
+
+		tol = self._resolve_tol(composition_tol)
+		qkey = self._quantize_composition_for_grouping(df, tol)
+		df["_qkey"] = qkey
+
+		phase_unique_comp = df.groupby("Phase")["_qkey"].nunique()
+		single_comp_phases = phase_unique_comp[phase_unique_comp == 1].index
+		df = df[df["Phase"].isin(single_comp_phases)].copy()
+		if df.empty:
+			return df
+
+		idx = df.groupby("Phase")["T_K"].idxmax()
+		out = df.loc[idx].copy().sort_values(by=["T_K", "Phase"], ascending=[False, True]).reset_index(drop=True)
+		return out.drop(columns=["_qkey"], errors="ignore")
+
+	@staticmethod
+	def _barycentric_to_tetrahedral(arr4: np.ndarray) -> np.ndarray:
+		v = np.array([
+			[0.0, 0.0, 0.0],
+			[1.0, 0.0, 0.0],
+			[0.5, np.sqrt(3.0) / 2.0, 0.0],
+			[0.5, np.sqrt(3.0) / 6.0, np.sqrt(2.0 / 3.0)],
+		], dtype=float)
+		return arr4 @ v
+
+	@staticmethod
+	def _add_tetrahedron_wireframe(fig: go.Figure):
+		verts = np.array([
+			[0.0, 0.0, 0.0],
+			[1.0, 0.0, 0.0],
+			[0.5, np.sqrt(3.0) / 2.0, 0.0],
+			[0.5, np.sqrt(3.0) / 6.0, np.sqrt(2.0 / 3.0)],
+		], dtype=float)
+		edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+		for i, j in edges:
+			fig.add_trace(
+				go.Scatter3d(
+					x=[verts[i, 0], verts[j, 0]],
+					y=[verts[i, 1], verts[j, 1]],
+					z=[verts[i, 2], verts[j, 2]],
+					mode="lines",
+					line=dict(color="rgba(80,80,80,0.7)", width=2),
+					showlegend=False,
+					hoverinfo="skip",
+				)
+			)
+
+	def _build_quaternary_point_frame(
+		self,
+		solution_only: bool,
+		include_liquid: bool,
+	) -> pd.DataFrame:
+		self._ensure_quaternary()
+		df = self._df_full.copy()
+		if not include_liquid:
+			df = df[~df["Phase"].apply(lambda p: _phase_is_liquid(p, self.liquid_aliases))].copy()
+		if solution_only:
+			df = df[df["Phase"].apply(self._phase_is_solution)].copy()
+		return df.reset_index(drop=True)
+
+	def plot_quaternary_tetrahedral(
+		self,
+		solution_only: bool = True,
+		include_liquid: bool = False,
+		title: Optional[str] = None,
+		marker_size: float = 5.0,
+	) -> go.Figure:
+		"""Plot quaternary boundary points on a tetrahedron colored by temperature."""
+		df = self._build_quaternary_point_frame(solution_only=solution_only, include_liquid=include_liquid)
+		if df.empty:
+			raise ValueError("No rows available for quaternary tetrahedral solution map under current filters.")
+
+		arr4 = df[self._full_comp_cols].to_numpy(dtype=float)
+		xyz = self._barycentric_to_tetrahedral(arr4)
+
+		phase_vals = df["Phase"].astype(str).to_numpy()
+		hover = np.column_stack([
+			phase_vals,
+			df["T_K"].to_numpy(dtype=float),
+			arr4,
+		])
+
+		fig = go.Figure()
+		fig.add_trace(
+			go.Scatter3d(
+				x=xyz[:, 0],
+				y=xyz[:, 1],
+				z=xyz[:, 2],
+				mode="markers",
+				marker=dict(
+					size=float(marker_size),
+					color=df["T_K"].to_numpy(dtype=float),
+					colorscale="Viridis",
+					showscale=True,
+					colorbar=dict(title="T [K]"),
+					opacity=0.85,
+				),
+				customdata=hover,
+				hovertemplate=(
+					"Phase=%{customdata[0]}<br>"
+					"T=%{customdata[1]:.2f} K<br>"
+					"x_dep=%{customdata[2]:.4f}<br>"
+					"x0=%{customdata[3]:.4f}<br>"
+					"x1=%{customdata[4]:.4f}<br>"
+					"x2=%{customdata[5]:.4f}<extra></extra>"
+				),
+				name="Boundary points",
+			)
+		)
+		self._add_tetrahedron_wireframe(fig)
+
+		labels = [self._component_label(i) for i in range(4)]
+		fig.add_trace(go.Scatter3d(x=[0.0], y=[0.0], z=[0.0], mode="text", text=[labels[0]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[1.0], y=[0.0], z=[0.0], mode="text", text=[labels[1]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[0.5], y=[np.sqrt(3.0) / 2.0], z=[0.0], mode="text", text=[labels[2]], showlegend=False))
+		fig.add_trace(
+			go.Scatter3d(
+				x=[0.5], y=[np.sqrt(3.0) / 6.0], z=[np.sqrt(2.0 / 3.0)], mode="text", text=[labels[3]], showlegend=False
+			)
+		)
+
+		fig.update_layout(
+			title=title or "Quaternary Tetrahedral Boundary Temperature Map",
+			scene=dict(
+				xaxis=dict(visible=False),
+				yaxis=dict(visible=False),
+				zaxis=dict(visible=False),
+				aspectmode="data",
+			),
+			margin=dict(l=0, r=0, b=0, t=40),
+		)
+		return fig
+
+	def plot_quaternary_intermetallic_max_t(
+		self,
+		composition_tol: Optional[float] = None,
+		include_solution_phases: bool = False,
+		title: Optional[str] = None,
+		marker_size: float = 8.0,
+	) -> go.Figure:
+		"""Plot intermetallic single-composition phase maxima on one tetrahedron."""
+		max_df = self.extract_intermetallic_single_composition_maxima(
+			composition_tol=composition_tol,
+			include_solution_phases=include_solution_phases,
+		)
+		if max_df.empty:
+			raise ValueError(
+				"No intermetallic single-composition phases found for maxima plot under current filters."
+			)
+
+		arr4 = max_df[self._full_comp_cols].to_numpy(dtype=float)
+		xyz = self._barycentric_to_tetrahedral(arr4)
+		hover = np.column_stack([
+			max_df["Phase"].astype(str).to_numpy(),
+			max_df["T_K"].to_numpy(dtype=float),
+			arr4,
+		])
+
+		fig = go.Figure()
+		fig.add_trace(
+			go.Scatter3d(
+				x=xyz[:, 0],
+				y=xyz[:, 1],
+				z=xyz[:, 2],
+				mode="markers+text",
+				text=max_df["Phase"].astype(str).tolist(),
+				textposition="top center",
+				marker=dict(
+					size=float(marker_size),
+					color=max_df["T_K"].to_numpy(dtype=float),
+					colorscale="Plasma",
+					showscale=True,
+					colorbar=dict(title="T_max [K]"),
+					opacity=0.95,
+					line=dict(color="rgba(0,0,0,0.45)", width=1),
+				),
+				customdata=hover,
+				hovertemplate=(
+					"Phase=%{customdata[0]}<br>"
+					"T_max=%{customdata[1]:.2f} K<br>"
+					"x_dep=%{customdata[2]:.4f}<br>"
+					"x0=%{customdata[3]:.4f}<br>"
+					"x1=%{customdata[4]:.4f}<br>"
+					"x2=%{customdata[5]:.4f}<extra></extra>"
+				),
+				name="Intermetallic phase maxima",
+			)
+		)
+		self._add_tetrahedron_wireframe(fig)
+
+		labels = [self._component_label(i) for i in range(4)]
+		fig.add_trace(go.Scatter3d(x=[0.0], y=[0.0], z=[0.0], mode="text", text=[labels[0]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[1.0], y=[0.0], z=[0.0], mode="text", text=[labels[1]], showlegend=False))
+		fig.add_trace(go.Scatter3d(x=[0.5], y=[np.sqrt(3.0) / 2.0], z=[0.0], mode="text", text=[labels[2]], showlegend=False))
+		fig.add_trace(
+			go.Scatter3d(
+				x=[0.5], y=[np.sqrt(3.0) / 6.0], z=[np.sqrt(2.0 / 3.0)], mode="text", text=[labels[3]], showlegend=False
+			)
+		)
+
+		fig.update_layout(
+			title=title or "Quaternary Intermetallic Single-Composition Phase Maxima",
+			scene=dict(
+				xaxis=dict(visible=False),
+				yaxis=dict(visible=False),
+				zaxis=dict(visible=False),
+				aspectmode="data",
+			),
+			margin=dict(l=0, r=0, b=0, t=40),
+		)
+		return fig
+
+
 def _parse_bool_env(name: str, default: bool) -> bool:
 	raw = os.getenv(name)
 	if raw is None:
@@ -662,6 +1329,14 @@ def _parse_float_env(name: str, default: float) -> float:
 	if raw is None:
 		return float(default)
 	return float(raw)
+
+
+def _parse_csv_env(name: str) -> Optional[List[str]]:
+	raw = os.getenv(name)
+	if raw is None:
+		return None
+	parts = [p.strip() for p in raw.split(",") if p.strip()]
+	return parts if parts else None
 
 
 def main_post() -> None:
@@ -774,7 +1449,186 @@ def main_post() -> None:
 	print("=" * 72)
 
 
-if __name__ == "__main__":
-	main_post()
+def main_viz() -> None:
+	default_phase_boundary_file = (
+		"all_dumps/quaternary_demo/plotter_dir/"
+		"Hf-Nb-W-Zr_T1927.00_3677.00_phase_boundary_equilibrium.pkl.gz"
+	)
+	phase_boundary_file = os.getenv("GP_PHASE_BOUNDARY_FILE", default_phase_boundary_file)
+	element_names = _parse_csv_env("GP_ELEMENT_NAMES")
+	solution_only = _parse_bool_env("GP_VIZ_SOLUTION_ONLY", True)
+	include_liquid = _parse_bool_env("GP_VIZ_INCLUDE_LIQUID", False)
+	intermetallic_include_solution = _parse_bool_env("GP_VIZ_INTERMETALLIC_INCLUDE_SOLUTION", False)
+	composition_tol = _parse_float_env("GP_VIZ_INTERMETALLIC_TOL", 1e-6)
+	save_html = _parse_bool_env("GP_VIZ_SAVE_HTML", True)
+	html_out_dir = Path(os.getenv("GP_VIZ_HTML_OUT_DIR", "all_dumps/quaternary_demo/plotter_dir"))
+	grid_delta = _parse_float_env("GP_VIZ_GRID_DELTA", 0.025)
 
+	print("=" * 72)
+	print("GENERAL PLOTTER VIZ SMOKE TEST")
+	print("=" * 72)
+	print(f"Phase boundary file: {phase_boundary_file}")
+	print(f"Element names override: {element_names}")
+	print(f"Solution-only quaternary map: {solution_only}")
+	print(f"Include liquid in quaternary map: {include_liquid}")
+	print(f"Intermetallic include solution phases: {intermetallic_include_solution}")
+	print(f"Intermetallic composition tolerance: {composition_tol}")
+	print(f"Save HTML outputs: {save_html}")
+	print(f"HTML output dir: {html_out_dir}")
+	print(f"Slice grid delta: {grid_delta}")
+
+	phase_boundary_path = Path(phase_boundary_file)
+	if not phase_boundary_path.exists():
+		raise FileNotFoundError(f"Phase-boundary file not found: {phase_boundary_path}")
+
+	df = pd.read_pickle(phase_boundary_path, compression="gzip")
+	comp_cols = _infer_comp_cols(df)
+	if element_names is None:
+		stem = phase_boundary_path.name
+		if "_T" in stem:
+			sys_name = stem.split("_T", 1)[0]
+			element_names = [p.strip() for p in sys_name.split("-") if p.strip()]
+	print(f"Loaded boundary dataframe shape: {df.shape}")
+	print(f"Inferred composition columns: {comp_cols}")
+	print(f"Element names used: {element_names}")
+
+	plotter = PhaseBoundaryPlotter(
+		equilibrium_df=df,
+		composition_cols=comp_cols,
+		element_names=element_names,
+	)
+
+	comp_check = plotter.validate_composition_integrity(tolerance=1e-6)
+	print(f"Composition integrity: {comp_check}")
+	print(f"Temperature stats: {plotter.get_temperature_statistics()}")
+
+	# Fixed quaternary component names for this system after inference.
+	full_names = plotter._full_component_names()
+	if len(full_names) != 4:
+		raise ValueError(f"Expected quaternary system (4 components), got {len(full_names)}: {full_names}")
+
+	if set(["Hf", "Nb", "W", "Zr"]).issubset(set(full_names)):
+		n_hf, n_nb, n_w, n_zr = "Hf", "Nb", "W", "Zr"
+	else:
+		# Fallback to positional mapping if names are unavailable or custom.
+		n_hf, n_nb, n_w, n_zr = full_names[0], full_names[1], full_names[2], full_names[3]
+
+	# Snap requested non-zero constraints to the available composition grid.
+	full_df = plotter._full_component_df()
+	nonzero_hf_target = plotter._snap_to_grid(0.05, grid_delta)
+	nonzero_w_target = plotter._snap_to_grid(0.075, grid_delta)
+	nonzero_w_tern_target = plotter._snap_to_grid(0.10, grid_delta)
+
+	nonzero_hf = plotter._nearest_available_value(full_df[n_hf], nonzero_hf_target)
+	nonzero_w = plotter._nearest_available_value(full_df[n_w], nonzero_w_target)
+	nonzero_w_tern = plotter._nearest_available_value(full_df[n_w], nonzero_w_tern_target)
+
+	print(f"Chosen non-zero binary slice fixed values: {n_hf}={nonzero_hf}, {n_w}={nonzero_w}")
+	print(f"Chosen non-zero ternary slice fixed value: {n_w}={nonzero_w_tern}")
+
+	# 1) Binary Nb-Zr at Hf=0, W=0.
+	fig_bin_pure = plotter.plot_binary_slice_tx(
+		comp_a=n_nb,
+		comp_b=n_zr,
+		fixed_components={n_hf: 0.0, n_w: 0.0},
+		tolerance=max(0.5 * grid_delta, 1e-6),
+		title=f"{n_nb}-{n_zr} Binary Slice ({n_hf}=0, {n_w}=0)",
+	)
+
+	# 2) Binary Nb-Zr at non-zero Hf and W.
+	fig_bin_nonzero = plotter.plot_binary_slice_tx(
+		comp_a=n_nb,
+		comp_b=n_zr,
+		fixed_components={n_hf: nonzero_hf, n_w: nonzero_w},
+		tolerance=max(0.5 * grid_delta, 1e-6),
+		title=f"{n_nb}-{n_zr} Slice ({n_hf}={nonzero_hf:.3f}, {n_w}={nonzero_w:.3f})",
+	)
+
+	# 3) Ternary Hf-Nb-Zr at W=0.
+	fig_tern_w0 = plotter.plot_ternary_slice(
+		comp_a=n_hf,
+		comp_b=n_nb,
+		comp_c=n_zr,
+		fixed_components={n_w: 0.0},
+		tolerance=max(0.5 * grid_delta, 1e-6),
+		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}=0)",
+		color_by="Phase",
+	)
+
+	# 4) Ternary Hf-Nb-Zr at non-zero W.
+	fig_tern_wnz = plotter.plot_ternary_slice(
+		comp_a=n_hf,
+		comp_b=n_nb,
+		comp_c=n_zr,
+		fixed_components={n_w: nonzero_w_tern},
+		tolerance=max(0.5 * grid_delta, 1e-6),
+		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}={nonzero_w_tern:.3f})",
+		color_by="Phase",
+	)
+
+	fig_solution = plotter.plot_quaternary_tetrahedral(
+		solution_only=solution_only,
+		include_liquid=include_liquid,
+		title="Quaternary Solution-Phase Temperature Map",
+	)
+	print(f"Solution tetrahedral traces: {len(fig_solution.data)}")
+
+	fig_liquid = plotter.plot_quaternary_phase_tetrahedral(
+		phase_filter="L",
+		title="Quaternary Liquidus Temperature Map",
+	)
+	print(f"Liquid tetrahedral traces: {len(fig_liquid.data)}")
+
+	phase_list = plotter.get_phase_list(include_liquid=True)
+	bcc_candidates = [p for p in phase_list if "BCC" in str(p).upper()]
+	if not bcc_candidates:
+		raise ValueError(f"No BCC-like phase found in phase list: {phase_list}")
+	bcc_phase_name = sorted(bcc_candidates)[0]
+
+	fig_bcc = plotter.plot_quaternary_phase_tetrahedral(
+		phase_filter=bcc_phase_name,
+		title=f"Quaternary {bcc_phase_name} Temperature Map",
+	)
+	print(f"{bcc_phase_name} tetrahedral traces: {len(fig_bcc.data)}")
+
+	fig_intermetallic = plotter.plot_quaternary_intermetallic_max_t(
+		composition_tol=composition_tol,
+		include_solution_phases=intermetallic_include_solution,
+		title="Quaternary Intermetallic Max Temperature Map",
+	)
+	print(f"Intermetallic tetrahedral traces: {len(fig_intermetallic.data)}")
+
+	if save_html:
+		html_out_dir.mkdir(parents=True, exist_ok=True)
+		bin_pure_out = html_out_dir / "nb_zr_binary_hf0_w0.html"
+		bin_nonzero_out = html_out_dir / "nb_zr_binary_nonzero_hf_w.html"
+		tern_w0_out = html_out_dir / "hf_nb_zr_ternary_w0.html"
+		tern_wnz_out = html_out_dir / "hf_nb_zr_ternary_w_nonzero.html"
+		sol_out = html_out_dir / "quaternary_solution_temp_map.html"
+		liq_out = html_out_dir / "quaternary_liquid_temp_map.html"
+		bcc_out = html_out_dir / "quaternary_bcc_temp_map.html"
+		imt_out = html_out_dir / "quaternary_intermetallic_max_t_map.html"
+		fig_bin_pure.write_html(str(bin_pure_out), include_plotlyjs="cdn")
+		fig_bin_nonzero.write_html(str(bin_nonzero_out), include_plotlyjs="cdn")
+		fig_tern_w0.write_html(str(tern_w0_out), include_plotlyjs="cdn")
+		fig_tern_wnz.write_html(str(tern_wnz_out), include_plotlyjs="cdn")
+		fig_solution.write_html(str(sol_out), include_plotlyjs="cdn")
+		fig_liquid.write_html(str(liq_out), include_plotlyjs="cdn")
+		fig_bcc.write_html(str(bcc_out), include_plotlyjs="cdn")
+		fig_intermetallic.write_html(str(imt_out), include_plotlyjs="cdn")
+		print(f"Saved HTML: {bin_pure_out}")
+		print(f"Saved HTML: {bin_nonzero_out}")
+		print(f"Saved HTML: {tern_w0_out}")
+		print(f"Saved HTML: {tern_wnz_out}")
+		print(f"Saved HTML: {sol_out}")
+		print(f"Saved HTML: {liq_out}")
+		print(f"Saved HTML: {bcc_out}")
+		print(f"Saved HTML: {imt_out}")
+
+	print("=" * 72)
+
+
+if __name__ == "__main__":
+    # main_post()
+    main_viz()
 
