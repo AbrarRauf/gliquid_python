@@ -120,6 +120,9 @@ class GeneralHSXPostprocess:
 
 		self.global_eutectic: Dict[str, Any] = {}
 		self.low_t_clusters: Dict[str, Any] = {}
+		self.phase_boundary_equilibrium_df: pd.DataFrame = pd.DataFrame()
+		self.phase_boundary_equilibrium_path: Optional[Path] = None
+		self.tmax_filter_diagnostic: Dict[str, Any] = {}
 
 	@classmethod
 	def from_system_cache_dir(
@@ -510,6 +513,109 @@ class GeneralHSXPostprocess:
 			raise IndexError("source_row_ids out of stitched GTX bounds.")
 		return self.gtx_df.iloc[idx].copy().reset_index(drop=True)
 
+	def _default_plotter_dir(self) -> Path:
+		"""Infer quaternary_demo/plotter_dir from the system cache directory."""
+		for p in [self.system_cache_dir] + list(self.system_cache_dir.parents):
+			if p.name == "lower_hull_cache":
+				return p.parent / "plotter_dir"
+		return self.system_cache_dir / "plotter_dir"
+
+	def extract_phase_boundary_equilibrium(
+		self,
+		min_unique_phases: int = 2,
+	) -> pd.DataFrame:
+		"""Keep only equilibrium rows from simplices spanning >= min_unique_phases.
+
+		This removes simplex rows that belong to a single phase only (e.g. all-L or
+		all-solid-solution simplex vertices), which are non-boundary simplices for
+		visualization workflows.
+		"""
+		if self.equilibrium_df.empty:
+			self.phase_boundary_equilibrium_df = pd.DataFrame(columns=self.equilibrium_df.columns)
+			return self.phase_boundary_equilibrium_df
+
+		if "simplex_id" not in self.equilibrium_df.columns or "Phase" not in self.equilibrium_df.columns:
+			raise ValueError("equilibrium_df must contain simplex_id and Phase columns.")
+
+		phase_pairs = self.equilibrium_df[["simplex_id", "Phase"]].drop_duplicates()
+		phase_counts = phase_pairs.groupby("simplex_id").size()
+		boundary_ids = phase_counts[phase_counts >= int(min_unique_phases)].index
+
+		keep_mask = self.equilibrium_df["simplex_id"].isin(boundary_ids)
+		self.phase_boundary_equilibrium_df = self.equilibrium_df.loc[keep_mask].copy().reset_index(drop=True)
+		return self.phase_boundary_equilibrium_df
+
+	def save_phase_boundary_equilibrium(
+		self,
+		output_dir: Optional[str] = None,
+		filename: Optional[str] = None,
+		compression: str = "gzip",
+	) -> Path:
+		"""Save phase-boundary-only equilibrium rows for downstream plotting."""
+		if self.phase_boundary_equilibrium_df.empty:
+			self.extract_phase_boundary_equilibrium(min_unique_phases=2)
+
+		if self.phase_boundary_equilibrium_df.empty:
+			raise ValueError("No phase-boundary equilibrium rows available to save.")
+
+		if output_dir is None:
+			out_dir = self._default_plotter_dir()
+		else:
+			out_dir = Path(output_dir)
+		out_dir.mkdir(parents=True, exist_ok=True)
+
+		if filename is None:
+			t_min = float(self.phase_boundary_equilibrium_df["T_K"].min()) if "T_K" in self.phase_boundary_equilibrium_df.columns else 0.0
+			t_max = float(self.phase_boundary_equilibrium_df["T_K"].max()) if "T_K" in self.phase_boundary_equilibrium_df.columns else 0.0
+			filename = f"{self.system_name or 'system'}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium.pkl.gz"
+
+		cols = [c for c in self.composition_cols + ["T_K", "T_C", "G", "Phase", "simplex_id", "source_row_id"] if c in self.phase_boundary_equilibrium_df.columns]
+		to_save = self.phase_boundary_equilibrium_df[cols].copy()
+
+		out_path = out_dir / filename
+		to_save.to_pickle(out_path, compression=compression)
+		self.phase_boundary_equilibrium_path = out_path
+		return out_path
+
+	def evaluate_tmax_filter_change(self, atol: float = 1e-9) -> Dict[str, Any]:
+		"""Compare Tmax before/after boundary filtering and inspect top-T phases."""
+		if self.equilibrium_df.empty:
+			d = {
+				"full_tmax_k": None,
+				"filtered_tmax_k": None,
+				"tmax_changed_after_filter": None,
+				"all_phases_at_full_tmax_are_liquid": None,
+				"phases_at_full_tmax": [],
+			}
+			self.tmax_filter_diagnostic = d
+			return d
+
+		if self.phase_boundary_equilibrium_df.empty:
+			self.extract_phase_boundary_equilibrium(min_unique_phases=2)
+
+		full_tmax = float(self.equilibrium_df["T_K"].max())
+		if self.phase_boundary_equilibrium_df.empty:
+			filtered_tmax = None
+			tmax_changed = True
+		else:
+			filtered_tmax = float(self.phase_boundary_equilibrium_df["T_K"].max())
+			tmax_changed = not bool(np.isclose(full_tmax, filtered_tmax, atol=atol, rtol=0.0))
+
+		top_mask = np.isclose(self.equilibrium_df["T_K"].to_numpy(dtype=float), full_tmax, atol=atol, rtol=0.0)
+		top_rows = self.equilibrium_df.loc[top_mask]
+		phases_at_top = sorted(top_rows["Phase"].astype(str).unique().tolist()) if not top_rows.empty else []
+		all_liquid = bool(len(phases_at_top) > 0 and all(_phase_is_liquid(p, self.liquid_aliases) for p in phases_at_top))
+
+		d = {
+			"full_tmax_k": full_tmax,
+			"filtered_tmax_k": filtered_tmax,
+			"tmax_changed_after_filter": bool(tmax_changed),
+			"all_phases_at_full_tmax_are_liquid": all_liquid,
+			"phases_at_full_tmax": phases_at_top,
+		}
+		self.tmax_filter_diagnostic = d
+		return d
+
 	def summary(self) -> Dict[str, Any]:
 		t_min = float(self.equilibrium_df["T_K"].min()) if not self.equilibrium_df.empty else None
 		t_max = float(self.equilibrium_df["T_K"].max()) if not self.equilibrium_df.empty else None
@@ -526,6 +632,9 @@ class GeneralHSXPostprocess:
 			"low_t_cluster_count": int(len(self.low_t_clusters.get("cluster_records", [])))
 			if isinstance(self.low_t_clusters.get("cluster_records"), pd.DataFrame)
 			else 0,
+			"n_phase_boundary_rows": int(len(self.phase_boundary_equilibrium_df)),
+			"phase_boundary_equilibrium_path": str(self.phase_boundary_equilibrium_path) if self.phase_boundary_equilibrium_path else None,
+			"tmax_filter_diagnostic": self.tmax_filter_diagnostic,
 		}
 
 
@@ -548,12 +657,24 @@ def _parse_int_env(name: str, default: int) -> int:
 	return int(raw)
 
 
-if __name__ == "__main__":
+def _parse_float_env(name: str, default: float) -> float:
+	raw = os.getenv(name)
+	if raw is None:
+		return float(default)
+	return float(raw)
+
+
+def main_post() -> None:
 	default_dir = "all_dumps/quaternary_demo/lower_hull_cache/Hf-Nb-W-Zr"
 	system_dir = os.getenv("GP_SYSTEM_CACHE_DIR", default_dir)
 	recursive = _parse_bool_env("GP_RECURSIVE", True)
 	load_gtx = _parse_bool_env("GP_LOAD_GTX", True)
 	load_and_stitch = _parse_bool_env("GP_LOAD_AND_STITCH", True)
+	extract_phase_boundary = _parse_bool_env("GP_EXTRACT_PHASE_BOUNDARY", True)
+	save_phase_boundary = _parse_bool_env("GP_SAVE_PHASE_BOUNDARY", True)
+	notify_tmax_unchanged = _parse_bool_env("GP_NOTIFY_TMAX_UNCHANGED", True)
+	tmax_change_atol = _parse_float_env("GP_TMAX_CHANGE_ATOL", 1e-9)
+	plotter_dir_override = os.getenv("GP_PLOTTER_DIR")
 	print_rows = _parse_int_env("GP_PRINT_ROWS", 20)
 
 	print("=" * 72)
@@ -563,6 +684,11 @@ if __name__ == "__main__":
 	print(f"Recursive manifest discovery: {recursive}")
 	print(f"Load GTX during stitch: {load_gtx}")
 	print(f"Execute full load_and_stitch: {load_and_stitch}")
+	print(f"Extract phase-boundary simplices: {extract_phase_boundary}")
+	print(f"Save phase-boundary dataframe: {save_phase_boundary}")
+	print(f"Notify when Tmax unchanged after filter: {notify_tmax_unchanged}")
+	print(f"Tmax change tolerance: {tmax_change_atol}")
+	print(f"Plotter dir override: {plotter_dir_override}")
 	print(f"Rows to print from reconstructed equilibrium_df: {print_rows}")
 
 	post = GeneralHSXPostprocess(
@@ -599,9 +725,6 @@ if __name__ == "__main__":
 	if load_and_stitch:
 		print("\n[Stitch] Running load_and_stitch()...")
 		post.load_and_stitch()
-		s = post.summary()
-		print("\n[Summary]")
-		print(json.dumps(s, indent=2, default=str))
 		print("\n[DataFrames]")
 		print(f"  equilibrium_df shape: {post.equilibrium_df.shape}")
 		print(f"  simplex_df shape: {post.simplex_df.shape}")
@@ -611,9 +734,47 @@ if __name__ == "__main__":
 			show_cols = [c for c in post.composition_cols + ["T_K", "T_C", "G", "Phase", "simplex_id", "source_row_id"] if c in post.equilibrium_df.columns]
 			print("\n[Reconstructed equilibrium_df sample]")
 			print(post.equilibrium_df[show_cols].head(max(1, print_rows)))
+
+		if extract_phase_boundary:
+			print("\n[Phase boundary filter] Extracting boundary simplices (>=2 unique phases per simplex_id)...")
+			phase_boundary_df = post.extract_phase_boundary_equilibrium(min_unique_phases=2)
+			print(f"  phase_boundary_equilibrium_df shape: {phase_boundary_df.shape}")
+			if not phase_boundary_df.empty:
+				show_cols_pb = [c for c in post.composition_cols + ["T_K", "T_C", "G", "Phase", "simplex_id", "source_row_id"] if c in phase_boundary_df.columns]
+				print("\n[Phase-boundary equilibrium sample]")
+				print(phase_boundary_df[show_cols_pb].head(max(1, print_rows)))
+
+			if save_phase_boundary:
+				out_path = post.save_phase_boundary_equilibrium(output_dir=plotter_dir_override)
+				print(f"Saved phase-boundary equilibrium file: {out_path}")
+
+			tmax_diag = post.evaluate_tmax_filter_change(atol=tmax_change_atol)
+			print("\n[Tmax diagnostic]")
+			print(
+				f"  full_tmax_k={tmax_diag['full_tmax_k']} | "
+				f"filtered_tmax_k={tmax_diag['filtered_tmax_k']} | "
+				f"tmax_changed_after_filter={tmax_diag['tmax_changed_after_filter']}"
+			)
+			print(f"  all_phases_at_full_tmax_are_liquid={tmax_diag['all_phases_at_full_tmax_are_liquid']}")
+			print(f"  phases_at_full_tmax={tmax_diag['phases_at_full_tmax']}")
+
+			if notify_tmax_unchanged and (tmax_diag.get("tmax_changed_after_filter") is False):
+				print(
+					"[WARN] Boundary-filter Tmax did not decrease. "
+					"Highest-temperature rows still include non-single-phase boundary simplices; "
+					"consider sampling a higher Tmax range to ensure complete high-T closure."
+				)
+
+		s = post.summary()
+		print("\n[Summary]")
+		print(json.dumps(s, indent=2, default=str))
 	else:
 		print("\n[Stitch] Skipped. Set GP_LOAD_AND_STITCH=true to run full stitching.")
 
 	print("=" * 72)
+
+
+if __name__ == "__main__":
+	main_post()
 
 
