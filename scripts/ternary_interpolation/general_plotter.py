@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import fnmatch
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -1038,24 +1039,48 @@ class PhaseBoundaryPlotter:
 	def plot_quaternary_phase_tetrahedral(
 		self,
 		phase_filter: str,
+		temperature_extrema: Optional[str] = None,
+		composition_tol: Optional[float] = None,
 		title: Optional[str] = None,
 		marker_size: float = 5.0,
 		colorscale: str = "Viridis",
 	) -> go.Figure:
 		self._ensure_quaternary()
 		df = self._df_full.copy()
-		if str(phase_filter).strip().upper() in {"L", "LIQUID"}:
+		filter_token = str(phase_filter).strip()
+		filter_up = filter_token.upper()
+
+		if filter_up in {"L", "LIQUID"}:
 			df = df[df["Phase"].apply(lambda p: _phase_is_liquid(p, self.liquid_aliases))].copy()
+		elif "*" in filter_token or "?" in filter_token:
+			pat = filter_token.upper()
+			df = df[df["Phase"].astype(str).apply(lambda p: fnmatch.fnmatch(str(p).upper(), pat))].copy()
 		else:
-			df = df[df["Phase"].astype(str).str.upper() == str(phase_filter).strip().upper()].copy()
+			df = df[df["Phase"].astype(str).str.upper() == filter_up].copy()
+
 		if df.empty:
 			raise ValueError(f"No rows available for phase filter: {phase_filter}")
 
+		temp_col_name = "T_K"
+		if temperature_extrema is not None:
+			ext = str(temperature_extrema).strip().lower()
+			if ext not in {"min", "max"}:
+				raise ValueError("temperature_extrema must be one of: None, 'min', 'max'")
+
+			tol = self._resolve_tol(composition_tol)
+			df = df.copy()
+			df["_qkey"] = self._quantize_composition_for_grouping(df, tol)
+			idx = df.groupby("_qkey")["T_K"].idxmin() if ext == "min" else df.groupby("_qkey")["T_K"].idxmax()
+			df = df.loc[idx].copy().reset_index(drop=True)
+			temp_col_name = "T_min_K" if ext == "min" else "T_max_K"
+			df[temp_col_name] = df["T_K"].astype(float)
+
 		arr4 = df[self._full_comp_cols].to_numpy(dtype=float)
 		xyz = self._barycentric_to_tetrahedral(arr4)
+		temp_vals = df["T_K"].to_numpy(dtype=float)
 		hover = np.column_stack([
 			df["Phase"].astype(str).to_numpy(),
-			df["T_K"].to_numpy(dtype=float),
+			temp_vals,
 			arr4,
 		])
 
@@ -1068,16 +1093,16 @@ class PhaseBoundaryPlotter:
 				mode="markers",
 				marker=dict(
 					size=float(marker_size),
-					color=df["T_K"].to_numpy(dtype=float),
+					color=temp_vals,
 					colorscale=colorscale,
 					showscale=True,
-					colorbar=dict(title="T [K]"),
+					colorbar=dict(title=f"{temp_col_name.replace('_', ' ')}"),
 					opacity=0.85,
 				),
 				customdata=hover,
 				hovertemplate=(
 					"Phase=%{customdata[0]}<br>"
-					"T=%{customdata[1]:.2f} K<br>"
+					f"{temp_col_name}=%{{customdata[1]:.2f}} K<br>"
 					"x_dep=%{customdata[2]:.4f}<br>"
 					"x0=%{customdata[3]:.4f}<br>"
 					"x1=%{customdata[4]:.4f}<br>"
@@ -1601,16 +1626,11 @@ def main_viz() -> None:
 		color_by="Phase",
 	)
 
-	fig_solution = plotter.plot_quaternary_tetrahedral(
-		solution_only=solution_only,
-		include_liquid=include_liquid,
-		title="Quaternary Solution-Phase Temperature Map",
-	)
-	print(f"Solution tetrahedral traces: {len(fig_solution.data)}")
-
 	fig_liquid = plotter.plot_quaternary_phase_tetrahedral(
 		phase_filter="L",
-		title="Quaternary Liquidus Temperature Map",
+		temperature_extrema="min",
+		composition_tol=max(0.5 * grid_delta, 1e-6),
+		title="Quaternary Liquidus Minimum-Temperature Map",
 	)
 	print(f"Liquid tetrahedral traces: {len(fig_liquid.data)}")
 
@@ -1621,8 +1641,10 @@ def main_viz() -> None:
 	bcc_phase_name = sorted(bcc_candidates)[0]
 
 	fig_bcc = plotter.plot_quaternary_phase_tetrahedral(
-		phase_filter=bcc_phase_name,
-		title=f"Quaternary {bcc_phase_name} Temperature Map",
+		phase_filter="BCC*",
+		temperature_extrema="max",
+		composition_tol=max(0.5 * grid_delta, 1e-6),
+		title=f"Quaternary {bcc_phase_name} Maximum-Temperature Map",
 	)
 	print(f"{bcc_phase_name} tetrahedral traces: {len(fig_bcc.data)}")
 
@@ -1639,15 +1661,13 @@ def main_viz() -> None:
 		bin_nonzero_out = html_out_dir / "nb_zr_binary_nonzero_hf_w.html"
 		tern_w0_out = html_out_dir / "hf_nb_zr_ternary_w0.html"
 		tern_wnz_out = html_out_dir / "hf_nb_zr_ternary_w_nonzero.html"
-		sol_out = html_out_dir / "quaternary_solution_temp_map.html"
-		liq_out = html_out_dir / "quaternary_liquid_temp_map.html"
-		bcc_out = html_out_dir / "quaternary_bcc_temp_map.html"
+		liq_out = html_out_dir / "quaternary_liquid_min_t_map.html"
+		bcc_out = html_out_dir / "quaternary_bcc_max_t_map.html"
 		imt_out = html_out_dir / "quaternary_intermetallic_max_t_map.html"
 		fig_bin_pure.write_html(str(bin_pure_out), include_plotlyjs="cdn")
 		fig_bin_nonzero.write_html(str(bin_nonzero_out), include_plotlyjs="cdn")
 		fig_tern_w0.write_html(str(tern_w0_out), include_plotlyjs="cdn")
 		fig_tern_wnz.write_html(str(tern_wnz_out), include_plotlyjs="cdn")
-		fig_solution.write_html(str(sol_out), include_plotlyjs="cdn")
 		fig_liquid.write_html(str(liq_out), include_plotlyjs="cdn")
 		fig_bcc.write_html(str(bcc_out), include_plotlyjs="cdn")
 		fig_intermetallic.write_html(str(imt_out), include_plotlyjs="cdn")
@@ -1655,7 +1675,6 @@ def main_viz() -> None:
 		print(f"Saved HTML: {bin_nonzero_out}")
 		print(f"Saved HTML: {tern_w0_out}")
 		print(f"Saved HTML: {tern_wnz_out}")
-		print(f"Saved HTML: {sol_out}")
 		print(f"Saved HTML: {liq_out}")
 		print(f"Saved HTML: {bcc_out}")
 		print(f"Saved HTML: {imt_out}")
