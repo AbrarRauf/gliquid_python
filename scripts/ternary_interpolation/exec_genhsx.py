@@ -133,13 +133,23 @@ def main() -> None:
 	if ref_ss_omegas_path_env:
 		ref_ss_omegas_path = str(Path(ref_ss_omegas_path_env).resolve())
 	else:
-		candidate = repo_root / "matrix_data" / "omegas.json"
-		ref_ss_omegas_path = str(candidate) if candidate.exists() else None
+		# Prefer repo-local, HPC-friendly omegas locations.
+		omegas_candidates = [
+			repo_root / "data" / "high_component" / "omegas.json",
+			repo_root / "matrix_data" / "omegas.json",
+			repo_root / "data" / "omegas.json",
+		]
+		ref_ss_omegas_path = None
+		for candidate in omegas_candidates:
+			if candidate.exists():
+				ref_ss_omegas_path = str(candidate)
+				break
 
 	if include_ref_ss and not ref_ss_omegas_path:
 		raise FileNotFoundError(
-			"include_ref_ss=True but no omegas path was provided and default "
-			"matrix_data/omegas.json was not found. Set REF_SS_OMEGAS_PATH."
+			"include_ref_ss=True but no omegas path was provided and no default was found in "
+			"data/high_component/omegas.json, matrix_data/omegas.json, or data/omegas.json. "
+			"Set REF_SS_OMEGAS_PATH."
 		)
 
 	canonical_elements = sorted(elements)
