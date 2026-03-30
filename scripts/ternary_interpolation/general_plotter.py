@@ -834,6 +834,20 @@ class PhaseBoundaryPlotter:
 			return float(value)
 		return float(np.round(float(value) / grid_delta) * grid_delta)
 
+	@staticmethod
+	def _cartesian_to_ternary_display(x_vals: np.ndarray, y_vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+		"""Match ternary_HSX cartesian_to_ternary transform for display coordinates."""
+		tx = x_vals + 0.5 * y_vals
+		ty = (np.sqrt(3.0) / 2.0) * y_vals
+		return tx, ty
+
+	@staticmethod
+	def _ternary_display_to_cartesian(tx_vals: np.ndarray, ty_vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+		"""Inverse of _cartesian_to_ternary_display for hover/reporting in cartesian comps."""
+		y = (2.0 / np.sqrt(3.0)) * ty_vals
+		x = tx_vals - 0.5 * y
+		return x, y
+
 	def _nearest_available_value(self, series: pd.Series, target: float) -> float:
 		vals = np.sort(series.dropna().unique().astype(float))
 		if len(vals) == 0:
@@ -928,6 +942,19 @@ class PhaseBoundaryPlotter:
 		df["a_norm"] = df[comp_a].to_numpy(dtype=float) / s
 		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
 		df["c_norm"] = df[comp_c].to_numpy(dtype=float) / s
+		tx, ty = self._cartesian_to_ternary_display(
+			df["a_norm"].to_numpy(dtype=float),
+			df["b_norm"].to_numpy(dtype=float),
+		)
+		df["tx"] = tx
+		df["ty"] = ty
+		x_back, y_back = self._ternary_display_to_cartesian(
+			df["tx"].to_numpy(dtype=float),
+			df["ty"].to_numpy(dtype=float),
+		)
+		df["a_cart_back"] = x_back
+		df["b_cart_back"] = y_back
+		df["c_cart_back"] = 1.0 - x_back - y_back
 
 		fig = go.Figure()
 		if color_by == "Phase":
@@ -935,8 +962,8 @@ class PhaseBoundaryPlotter:
 			for phase_name, g in df.groupby("Phase"):
 				fig.add_trace(
 					go.Scatter3d(
-						x=g["a_norm"],
-						y=g["b_norm"],
+						x=g["tx"],
+						y=g["ty"],
 						z=g["T_K"],
 						mode="markers",
 						name=str(phase_name),
@@ -945,7 +972,9 @@ class PhaseBoundaryPlotter:
 							g[comp_a].to_numpy(dtype=float),
 							g[comp_b].to_numpy(dtype=float),
 							g[comp_c].to_numpy(dtype=float),
-							g["c_norm"].to_numpy(dtype=float),
+							g["a_cart_back"].to_numpy(dtype=float),
+							g["b_cart_back"].to_numpy(dtype=float),
+							g["c_cart_back"].to_numpy(dtype=float),
 						]),
 						hovertemplate=(
 							f"Phase={phase_name}<br>"
@@ -953,15 +982,18 @@ class PhaseBoundaryPlotter:
 							f"{comp_a}=%{{customdata[0]:.4f}}<br>"
 							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
 							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
-							f"{comp_c}_norm=%{{customdata[3]:.4f}}<extra></extra>"
+							"<br><b>Back-mapped Cartesian</b><br>"
+							f"{comp_a}_cart=%{{customdata[3]:.4f}}<br>"
+							f"{comp_b}_cart=%{{customdata[4]:.4f}}<br>"
+							f"{comp_c}_cart=%{{customdata[5]:.4f}}<extra></extra>"
 						),
 					)
 				)
 		else:
 			fig.add_trace(
 				go.Scatter3d(
-					x=df["a_norm"],
-					y=df["b_norm"],
+					x=df["tx"],
+					y=df["ty"],
 					z=df["T_K"],
 					mode="markers",
 					name=color_by,
@@ -977,10 +1009,13 @@ class PhaseBoundaryPlotter:
 
 		# Draw base simplex triangle at minimum temperature for orientation.
 		tmin = float(df["T_K"].min()) if not df.empty else 0.0
+		b0x, b0y = self._cartesian_to_ternary_display(np.array([0.0]), np.array([0.0]))
+		b1x, b1y = self._cartesian_to_ternary_display(np.array([1.0]), np.array([0.0]))
+		b2x, b2y = self._cartesian_to_ternary_display(np.array([0.0]), np.array([1.0]))
 		fig.add_trace(
 			go.Scatter3d(
-				x=[0.0, 1.0, 0.0, 0.0],
-				y=[0.0, 0.0, 1.0, 0.0],
+				x=[float(b0x[0]), float(b1x[0]), float(b2x[0]), float(b0x[0])],
+				y=[float(b0y[0]), float(b1y[0]), float(b2y[0]), float(b0y[0])],
 				z=[tmin, tmin, tmin, tmin],
 				mode="lines",
 				line=dict(color="black", width=3),
@@ -992,8 +1027,8 @@ class PhaseBoundaryPlotter:
 		fig.update_layout(
 			title=title or f"Ternary Slice 3D ({comp_a}-{comp_b}-{comp_c})",
 			scene=dict(
-				xaxis=dict(title=f"{comp_a} (normalized)"),
-				yaxis=dict(title=f"{comp_b} (normalized)"),
+				xaxis=dict(title="Ternary display x"),
+				yaxis=dict(title="Ternary display y"),
 				zaxis=dict(title="T [K]"),
 			),
 			margin=dict(l=0, r=0, b=0, t=40),
