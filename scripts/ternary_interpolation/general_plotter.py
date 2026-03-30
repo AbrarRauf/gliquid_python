@@ -687,6 +687,7 @@ class PhaseBoundaryPlotter:
 
 		self._df_full = self._prepare_full_composition_df(self.equilibrium_df)
 		self._full_comp_cols = ["x_dep"] + self.composition_cols
+		self._simplex_phase_map = self._build_simplex_phase_map()
 
 	def validate_schema(self) -> Dict[str, Any]:
 		errors: List[str] = []
@@ -719,6 +720,38 @@ class PhaseBoundaryPlotter:
 		out = df.copy()
 		x_dep = 1.0 - out[self.composition_cols].sum(axis=1)
 		out["x_dep"] = x_dep.astype(float)
+		return out
+
+	def _build_simplex_phase_map(self) -> Dict[int, Tuple[str, ...]]:
+		"""Build simplex_id -> sorted unique phases once for efficient hover enrichment."""
+		if "simplex_id" not in self.equilibrium_df.columns:
+			return {}
+		simplex_phase_series = (
+			self.equilibrium_df[["simplex_id", "Phase"]]
+			.dropna(subset=["simplex_id", "Phase"])
+			.groupby("simplex_id")["Phase"]
+			.apply(lambda s: tuple(sorted({str(v) for v in s.tolist()})))
+		)
+		return {int(k): tuple(v) for k, v in simplex_phase_series.items()}
+
+	def _attach_coexisting_phases(self, df: pd.DataFrame) -> pd.DataFrame:
+		"""Add coexisting phase list per row using simplex cache; excludes the row phase itself."""
+		out = df.copy()
+		if "simplex_id" not in out.columns or not self._simplex_phase_map:
+			out["coexisting_phases"] = ""
+			return out
+
+		simplex_vals = out["simplex_id"].to_numpy()
+		phase_vals = out["Phase"].astype(str).to_numpy()
+		coexist = []
+		for sid, ph in zip(simplex_vals, phase_vals):
+			if pd.isna(sid):
+				coexist.append("")
+				continue
+			phases = self._simplex_phase_map.get(int(sid), tuple())
+			others = [p for p in phases if p != ph]
+			coexist.append(", ".join(others))
+		out["coexisting_phases"] = coexist
 		return out
 
 	def _component_label(self, idx: int) -> str:
@@ -873,7 +906,7 @@ class PhaseBoundaryPlotter:
 			raise ValueError(
 				f"No rows found for fixed components {fixed_components} with tolerance {tol}."
 			)
-		return out
+		return self._attach_coexisting_phases(out)
 
 	def plot_binary_slice_tx(
 		self,
@@ -883,6 +916,10 @@ class PhaseBoundaryPlotter:
 		tolerance: Optional[float] = None,
 		title: Optional[str] = None,
 	) -> go.Figure:
+		if comp_a in fixed_components or comp_b in fixed_components:
+			raise ValueError(
+				f"fixed_components cannot include plotted binary components ({comp_a}, {comp_b})."
+			)
 		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
 		if comp_a not in df.columns or comp_b not in df.columns:
 			raise ValueError(f"Binary components must exist in dataframe columns: {comp_a}, {comp_b}")
@@ -895,6 +932,12 @@ class PhaseBoundaryPlotter:
 			raise ValueError(f"No valid rows for binary ratio {comp_a}/({comp_a}+{comp_b}) after filtering.")
 
 		df["x_pair"] = df[comp_a].to_numpy(dtype=float) / pair_sum
+		df["pair_total"] = pair_sum
+		pair_total_nominal = float(np.median(pair_sum)) if len(pair_sum) else 0.0
+		df[f"{comp_a}_abs_min"] = 0.0
+		df[f"{comp_a}_abs_max"] = pair_total_nominal
+		df[f"{comp_b}_abs_min"] = 0.0
+		df[f"{comp_b}_abs_max"] = pair_total_nominal
 		color_map = self._phase_color_map(df["Phase"].astype(str).tolist())
 		fig = px.scatter(
 			df,
@@ -908,6 +951,12 @@ class PhaseBoundaryPlotter:
 				comp_b: ":.4f",
 				"T_K": ":.2f",
 				"x_pair": ":.4f",
+					"pair_total": ":.4f",
+					f"{comp_a}_abs_min": ":.4f",
+					f"{comp_a}_abs_max": ":.4f",
+					f"{comp_b}_abs_min": ":.4f",
+					f"{comp_b}_abs_max": ":.4f",
+					"coexisting_phases": True,
 			},
 		)
 		fig.update_traces(marker=dict(size=6, opacity=0.8))
@@ -915,6 +964,7 @@ class PhaseBoundaryPlotter:
 			xaxis_title=f"x_{comp_a} / (x_{comp_a} + x_{comp_b})",
 			yaxis_title="T [K]",
 			plot_bgcolor="white",
+			title=(title or f"Binary Slice {comp_a}-{comp_b}") + f" | in-system bounds: [0, {pair_total_nominal:.3f}]",
 		)
 		return fig
 
@@ -928,6 +978,10 @@ class PhaseBoundaryPlotter:
 		title: Optional[str] = None,
 		color_by: str = "Phase",
 	) -> go.Figure:
+		if comp_a in fixed_components or comp_b in fixed_components or comp_c in fixed_components:
+			raise ValueError(
+				f"fixed_components cannot include plotted ternary components ({comp_a}, {comp_b}, {comp_c})."
+			)
 		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
 		for col in [comp_a, comp_b, comp_c]:
 			if col not in df.columns:
@@ -943,19 +997,13 @@ class PhaseBoundaryPlotter:
 		df["a_norm"] = df[comp_a].to_numpy(dtype=float) / s
 		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
 		df["c_norm"] = df[comp_c].to_numpy(dtype=float) / s
+		df["ternary_slice_total"] = s
 		tx, ty = self._cartesian_to_ternary_display(
 			df["a_norm"].to_numpy(dtype=float),
 			df["b_norm"].to_numpy(dtype=float),
 		)
 		df["tx"] = tx
 		df["ty"] = ty
-		x_back, y_back = self._ternary_display_to_cartesian(
-			df["tx"].to_numpy(dtype=float),
-			df["ty"].to_numpy(dtype=float),
-		)
-		df["a_cart_back"] = x_back
-		df["b_cart_back"] = y_back
-		df["c_cart_back"] = 1.0 - x_back - y_back
 
 		fig = go.Figure()
 		if color_by == "Phase":
@@ -973,9 +1021,8 @@ class PhaseBoundaryPlotter:
 							g[comp_a].to_numpy(dtype=float),
 							g[comp_b].to_numpy(dtype=float),
 							g[comp_c].to_numpy(dtype=float),
-							g["a_cart_back"].to_numpy(dtype=float),
-							g["b_cart_back"].to_numpy(dtype=float),
-							g["c_cart_back"].to_numpy(dtype=float),
+							g["ternary_slice_total"].to_numpy(dtype=float),
+							g["coexisting_phases"].astype(str).to_numpy(),
 						]),
 						hovertemplate=(
 							f"Phase={phase_name}<br>"
@@ -983,10 +1030,8 @@ class PhaseBoundaryPlotter:
 							f"{comp_a}=%{{customdata[0]:.4f}}<br>"
 							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
 							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
-							"<br><b>Back-mapped Cartesian</b><br>"
-							f"{comp_a}_cart=%{{customdata[3]:.4f}}<br>"
-							f"{comp_b}_cart=%{{customdata[4]:.4f}}<br>"
-							f"{comp_c}_cart=%{{customdata[5]:.4f}}<extra></extra>"
+							"Slice_total=%{customdata[3]:.4f}<br>"
+							"Coexisting=%{customdata[4]}<extra></extra>"
 						),
 					)
 				)
@@ -1075,6 +1120,7 @@ class PhaseBoundaryPlotter:
 			temp_col_name = "T_min_K" if ext == "min" else "T_max_K"
 			df[temp_col_name] = df["T_K"].astype(float)
 
+		df = self._attach_coexisting_phases(df)
 		arr4 = df[self._full_comp_cols].to_numpy(dtype=float)
 		xyz = self._barycentric_to_tetrahedral(arr4)
 		temp_vals = df["T_K"].to_numpy(dtype=float)
@@ -1082,6 +1128,7 @@ class PhaseBoundaryPlotter:
 			df["Phase"].astype(str).to_numpy(),
 			temp_vals,
 			arr4,
+			df["coexisting_phases"].astype(str).to_numpy(),
 		])
 
 		fig = go.Figure()
@@ -1106,7 +1153,8 @@ class PhaseBoundaryPlotter:
 					"x_dep=%{customdata[2]:.4f}<br>"
 					"x0=%{customdata[3]:.4f}<br>"
 					"x1=%{customdata[4]:.4f}<br>"
-					"x2=%{customdata[5]:.4f}<extra></extra>"
+					"x2=%{customdata[5]:.4f}<br>"
+					"Coexisting=%{customdata[6]}<extra></extra>"
 				),
 				name=f"{phase_filter} points",
 			)
@@ -1228,10 +1276,12 @@ class PhaseBoundaryPlotter:
 		xyz = self._barycentric_to_tetrahedral(arr4)
 
 		phase_vals = df["Phase"].astype(str).to_numpy()
+		df = self._attach_coexisting_phases(df)
 		hover = np.column_stack([
 			phase_vals,
 			df["T_K"].to_numpy(dtype=float),
 			arr4,
+			df["coexisting_phases"].astype(str).to_numpy(),
 		])
 
 		fig = go.Figure()
@@ -1256,7 +1306,8 @@ class PhaseBoundaryPlotter:
 					"x_dep=%{customdata[2]:.4f}<br>"
 					"x0=%{customdata[3]:.4f}<br>"
 					"x1=%{customdata[4]:.4f}<br>"
-					"x2=%{customdata[5]:.4f}<extra></extra>"
+					"x2=%{customdata[5]:.4f}<br>"
+					"Coexisting=%{customdata[6]}<extra></extra>"
 				),
 				name="Boundary points",
 			)
@@ -1304,10 +1355,12 @@ class PhaseBoundaryPlotter:
 
 		arr4 = max_df[self._full_comp_cols].to_numpy(dtype=float)
 		xyz = self._barycentric_to_tetrahedral(arr4)
+		max_df = self._attach_coexisting_phases(max_df)
 		hover = np.column_stack([
 			max_df["Phase"].astype(str).to_numpy(),
 			max_df["T_K"].to_numpy(dtype=float),
 			arr4,
+			max_df["coexisting_phases"].astype(str).to_numpy(),
 		])
 
 		fig = go.Figure()
@@ -1335,7 +1388,8 @@ class PhaseBoundaryPlotter:
 					"x_dep=%{customdata[2]:.4f}<br>"
 					"x0=%{customdata[3]:.4f}<br>"
 					"x1=%{customdata[4]:.4f}<br>"
-					"x2=%{customdata[5]:.4f}<extra></extra>"
+					"x2=%{customdata[5]:.4f}<br>"
+					"Coexisting=%{customdata[6]}<extra></extra>"
 				),
 				name="Intermetallic phase maxima",
 			)
