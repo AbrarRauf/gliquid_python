@@ -1308,6 +1308,20 @@ class PhaseBoundaryPlotter:
 			)
 		)
 
+		# Label the three simplex corners for the active ternary slice components.
+		fig.add_trace(
+			go.Scatter3d(
+				x=[float(b0x[0]), float(b1x[0]), float(b2x[0])],
+				y=[float(b0y[0]), float(b1y[0]), float(b2y[0])],
+				z=[tmin, tmin, tmin],
+				mode="text",
+				text=[str(comp_c), str(comp_a), str(comp_b)],
+				textposition="top center",
+				showlegend=False,
+				hoverinfo="skip",
+			)
+		)
+
 		fig.update_layout(
 			title=title or f"Ternary Slice 3D ({comp_a}-{comp_b}-{comp_c})",
 			legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top'),
