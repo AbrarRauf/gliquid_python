@@ -444,7 +444,7 @@ def main_viz() -> None:
             )
         phase_boundary_file = candidates[-1]
 
-    html_out_dir = plotter_dir / "hea_dump_new"
+    html_out_dir = plotter_dir / "hea_dump_main"
     html_out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -471,128 +471,161 @@ def main_viz() -> None:
     if len(full_names) != 5:
         raise ValueError(f"Expected 5 total components for HEA run, got {len(full_names)}: {full_names}")
 
-    # ------------------ Binary batches (10 binaries x 10 variants) ------------------
-    binary_variant_targets = [
-        (0.0, 0.0, 0.0),
-        (0.05, 0.0, 0.0),
-        (0.0, 0.05, 0.0),
-        (0.0, 0.0, 0.05),
-        (0.05, 0.05, 0.0),
-        (0.05, 0.0, 0.05),
-        (0.0, 0.05, 0.05),
-        (0.10, 0.0, 0.0),
-        (0.0, 0.10, 0.0),
-        (0.0, 0.0, 0.10),
+    # -----------------------------------------------------------------------------
+    # Hard-coded example slices (intentionally chosen as random-looking demos).
+    # These are explicit so users can copy/modify them directly.
+    #
+    # How to use:
+    # - Binary: pick (comp_a, comp_b), then set fixed values for the other 3 comps.
+    # - Ternary: pick (comp_a, comp_b, comp_c), then set fixed values for the other 2 comps.
+    # - Quaternary: pick 4 components, fix the omitted 1 component, then project with
+    #   _reduce_to_quaternary_df and plot with plot_quaternary_phase_tetrahedral.
+    # -----------------------------------------------------------------------------
+    print("Generating hard-coded random-example demos only (3 binary, 3 ternary, 3 quaternary).")
+
+    def _snap_fixed(fixed_components: Dict[str, float]) -> Dict[str, float]:
+        snapped: Dict[str, float] = {}
+        for name, val in fixed_components.items():
+            snapped[name] = _nearest_available(full_df[name], float(val))
+        return snapped
+
+    # ------------------ Binary examples (3) --------------------------------------
+    binary_examples = [
+        {
+            "comp_a": "Al",
+            "comp_b": "Zr",
+            "fixed": {"Hf": 0.15, "Nb": 0.20, "W": 0.10},
+        },
+        {
+            "comp_a": "Al",
+            "comp_b": "Zr",
+            "fixed": {"Hf": 0.10, "Nb": 0.15, "W": 0.25},
+        },
+        {
+            "comp_a": "Al",
+            "comp_b": "Zr",
+            "fixed": {"Hf": 0.20, "Nb": 0.10, "W": 0.15},
+        },
     ]
 
     bin_saved = 0
-    for a, b in combinations(full_names, 2):
-        others = [x for x in full_names if x not in {a, b}]
-        for vidx, target in enumerate(binary_variant_targets, start=1):
-            fixed = {}
-            for name, val in zip(others, target):
-                snapped = np.round(val / grid_delta) * grid_delta
-                fixed[name] = _nearest_available(full_df[name], float(snapped))
-            try:
-                fig = plotter.plot_binary_slice_tx(
-                    comp_a=a,
-                    comp_b=b,
-                    fixed_components=fixed,
-                    tolerance=tol,
-                    phase_extrema_filter=use_phase_extrema,
-                    title=f"{a}-{b} binary | fixed {fixed}",
-                )
-            except Exception as e:
-                print(f"[SKIP][binary] {a}-{b} variant {vidx}: {e}")
-                continue
-            out = html_out_dir / f"binary_{a}_{b}_v{vidx:02d}.html"
-            fig.write_html(str(out), include_plotlyjs="cdn")
-            bin_saved += 1
+    for i, ex in enumerate(binary_examples, start=1):
+        fixed = _snap_fixed(ex["fixed"])
+        try:
+            fig = plotter.plot_binary_slice_tx(
+                comp_a=ex["comp_a"],
+                comp_b=ex["comp_b"],
+                fixed_components=fixed,
+                tolerance=tol,
+                phase_extrema_filter=use_phase_extrema,
+                title=f"RANDOM-EXAMPLE binary {ex['comp_a']}-{ex['comp_b']} | fixed {fixed}",
+            )
+        except Exception as e:
+            print(f"[SKIP][binary example {i}] {ex['comp_a']}-{ex['comp_b']}: {e}")
+            continue
+        out = html_out_dir / f"binary_example_{i:02d}_{ex['comp_a']}_{ex['comp_b']}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+        bin_saved += 1
 
-    # ------------------ Ternary batches (10 ternaries x 5 variants) ------------------
-    ternary_variant_targets = [
-        (0.0, 0.0),
-        (0.05, 0.0),
-        (0.0, 0.05),
-        (0.10, 0.0),
-        (0.0, 0.10),
+    # ------------------ Ternary examples (3) -------------------------------------
+    ternary_examples = [
+        {
+            "comp_a": "Al",
+            "comp_b": "Nb",
+            "comp_c": "Zr",
+            "fixed": {"Hf": 0.15, "W": 0.15},
+        },
+        {
+            "comp_a": "Al",
+            "comp_b": "Nb",
+            "comp_c": "Zr",
+            "fixed": {"Hf": 0.20, "W": 0.10},
+        },
+        {
+            "comp_a": "Al",
+            "comp_b": "Nb",
+            "comp_c": "Zr",
+            "fixed": {"Hf": 0.10, "W": 0.20},
+        },
     ]
 
     tern_saved = 0
-    for a, b, c in combinations(full_names, 3):
-        others = [x for x in full_names if x not in {a, b, c}]
-        for vidx, target in enumerate(ternary_variant_targets, start=1):
-            fixed = {}
-            for name, val in zip(others, target):
-                snapped = np.round(val / grid_delta) * grid_delta
-                fixed[name] = _nearest_available(full_df[name], float(snapped))
-            try:
-                fig = plotter.plot_ternary_slice(
-                    comp_a=a,
-                    comp_b=b,
-                    comp_c=c,
-                    fixed_components=fixed,
-                    tolerance=tol,
-                    phase_extrema_filter=use_phase_extrema,
-                    ternary_phase_mesh=use_ternary_phase_mesh,
-                    slice_grid_delta=grid_delta,
-                    ss_cluster_factor=ss_cluster_factor,
-                    title=f"{a}-{b}-{c} ternary | fixed {fixed}",
-                    color_by="Phase",
-                )
-            except Exception as e:
-                print(f"[SKIP][ternary] {a}-{b}-{c} variant {vidx}: {e}")
-                continue
-            out = html_out_dir / f"ternary_{a}_{b}_{c}_v{vidx:02d}.html"
-            fig.write_html(str(out), include_plotlyjs="cdn")
-            tern_saved += 1
-
-    # ------------------ Quaternary batches (5 quaternaries x 3 variants) ------------
-    quaternary_fixed_targets = [0.0, 0.05, 0.10]
-    quat_saved = 0
-
-    for selected4 in combinations(full_names, 4):
-        omitted = [x for x in full_names if x not in set(selected4)]
-        if len(omitted) != 1:
+    for i, ex in enumerate(ternary_examples, start=1):
+        fixed = _snap_fixed(ex["fixed"])
+        try:
+            fig = plotter.plot_ternary_slice(
+                comp_a=ex["comp_a"],
+                comp_b=ex["comp_b"],
+                comp_c=ex["comp_c"],
+                fixed_components=fixed,
+                tolerance=tol,
+                phase_extrema_filter=use_phase_extrema,
+                ternary_phase_mesh=use_ternary_phase_mesh,
+                slice_grid_delta=grid_delta,
+                ss_cluster_factor=ss_cluster_factor,
+                title=f"RANDOM-EXAMPLE ternary {ex['comp_a']}-{ex['comp_b']}-{ex['comp_c']} | fixed {fixed}",
+                color_by="Phase",
+            )
+        except Exception as e:
+            print(f"[SKIP][ternary example {i}] {ex['comp_a']}-{ex['comp_b']}-{ex['comp_c']}: {e}")
             continue
-        fixed_name = omitted[0]
+        out = html_out_dir / f"ternary_example_{i:02d}_{ex['comp_a']}_{ex['comp_b']}_{ex['comp_c']}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+        tern_saved += 1
 
-        for vidx, target in enumerate(quaternary_fixed_targets, start=1):
-            snapped = np.round(target / grid_delta) * grid_delta
-            fixed_val = _nearest_available(full_df[fixed_name], float(snapped))
-            fixed = {fixed_name: fixed_val}
+    # ------------------ Quaternary examples (3) ----------------------------------
+    quaternary_examples = [
+        {
+            "selected4": ["Al", "Hf", "Nb", "Zr"],
+            "fixed": {"W": 0.10},
+            "phase_filter": "L",
+            "temperature_extrema": "min",
+        },
+        {
+            "selected4": ["Al", "Hf", "Nb", "Zr"],
+            "fixed": {"W": 0.15},
+            "phase_filter": "L",
+            "temperature_extrema": "min",
+        },
+        {
+            "selected4": ["Al", "Hf", "Nb", "Zr"],
+            "fixed": {"W": 0.20},
+            "phase_filter": "L",
+            "temperature_extrema": "min",
+        },
+    ]
 
-            try:
-                df_slice = plotter.filter_by_fixed_components(fixed_components=fixed, tolerance=tol)
-                df_q = _reduce_to_quaternary_df(df_slice, selected_full_components=list(selected4))
-                if df_q.empty:
-                    raise ValueError("Projected quaternary slice is empty")
-                qplotter = PhaseBoundaryPlotter(
-                    equilibrium_df=df_q,
-                    composition_cols=["x0", "x1", "x2"],
-                    element_names=list(selected4),
-                )
-                fig_l = qplotter.plot_quaternary_phase_tetrahedral(
-                    phase_filter="L",
-                    temperature_extrema="min",
-                    composition_tol=tol,
-                    title=f"Quaternary {selected4} | {fixed_name}={fixed_val:.2f} | Liquid Tmin",
-                )
-                fig_b = qplotter.plot_quaternary_phase_tetrahedral(
-                    phase_filter="BCC*",
-                    temperature_extrema="max",
-                    composition_tol=tol,
-                    title=f"Quaternary {selected4} | {fixed_name}={fixed_val:.2f} | BCC Tmax",
-                )
-            except Exception as e:
-                print(f"[SKIP][quaternary] {selected4} variant {vidx}: {e}")
-                continue
+    quat_saved = 0
+    for i, ex in enumerate(quaternary_examples, start=1):
+        selected4 = ex["selected4"]
+        fixed = _snap_fixed(ex["fixed"])
+        try:
+            df_slice = plotter.filter_by_fixed_components(fixed_components=fixed, tolerance=tol)
+            df_q = _reduce_to_quaternary_df(df_slice, selected_full_components=selected4)
+            if df_q.empty:
+                raise ValueError("Projected quaternary slice is empty")
+            qplotter = PhaseBoundaryPlotter(
+                equilibrium_df=df_q,
+                composition_cols=["x0", "x1", "x2"],
+                element_names=selected4,
+            )
+            fixed_name = next(iter(fixed.keys()))
+            fig = qplotter.plot_quaternary_phase_tetrahedral(
+                phase_filter=str(ex["phase_filter"]),
+                temperature_extrema=str(ex["temperature_extrema"]),
+                composition_tol=tol,
+                title=(
+                    f"RANDOM-EXAMPLE quaternary {tuple(selected4)} | "
+                    f"fixed {fixed_name}={fixed[fixed_name]:.2f}"
+                ),
+            )
+        except Exception as e:
+            print(f"[SKIP][quaternary example {i}] {selected4}: {e}")
+            continue
 
-            out_l = html_out_dir / f"quaternary_{'_'.join(selected4)}_v{vidx:02d}_liquid_min.html"
-            out_b = html_out_dir / f"quaternary_{'_'.join(selected4)}_v{vidx:02d}_bcc_max.html"
-            fig_l.write_html(str(out_l), include_plotlyjs="cdn")
-            fig_b.write_html(str(out_b), include_plotlyjs="cdn")
-            quat_saved += 2
+        out = html_out_dir / f"quaternary_example_{i:02d}_{'_'.join(selected4)}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+        quat_saved += 1
 
     run_summary = {
         "system": system_name,
