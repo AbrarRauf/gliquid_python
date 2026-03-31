@@ -1711,6 +1711,7 @@ class GeneralEquilibrium:
         vertical_simplices: bool = True,
         print_progress: bool = True,
         progress_every: int = 1,
+        drop_single_phase_simplices: bool = True,
     ) -> pd.DataFrame:
         """Solve lower-hull equilibrium for each temperature slice.
 
@@ -1718,6 +1719,9 @@ class GeneralEquilibrium:
             vertical_simplices: Forwarded to gliq_lowerhull3.
             print_progress: If True, print incremental temperature-slice progress.
             progress_every: Print cadence in number of processed slices.
+            drop_single_phase_simplices: If True, discard simplices whose
+                vertices all belong to the same phase before storing results.
+                This reduces in-memory equilibrium/simplex row accumulation.
         """
         work = self.gtx_data.reset_index(drop=True).copy()
         work['source_row_id'] = np.arange(len(work), dtype=int)
@@ -1725,6 +1729,8 @@ class GeneralEquilibrium:
         eq_rows = []
         simplex_rows = []
         simplex_counter = 0
+        dropped_single_phase_simplices = 0
+        dropped_single_phase_vertices = 0
 
         grouped = work.groupby(self.temp_col, sort=True)
         self.total_temperature_slices = int(grouped.ngroups)
@@ -1774,13 +1780,18 @@ class GeneralEquilibrium:
             self.temperature_slice_status[t_val] = 'ok'
 
             for simplex in simplices:
-                simplex_id = simplex_counter
-                simplex_counter += 1
-
                 local_idx = [int(i) for i in np.asarray(simplex).tolist()]
                 simplex_vertices = df_t.iloc[local_idx].copy()
                 source_ids = simplex_vertices['source_row_id'].astype(int).tolist()
                 phase_names = simplex_vertices[self.phase_col].astype(str).tolist()
+
+                if drop_single_phase_simplices and len(set(phase_names)) <= 1:
+                    dropped_single_phase_simplices += 1
+                    dropped_single_phase_vertices += int(len(local_idx))
+                    continue
+
+                simplex_id = simplex_counter
+                simplex_counter += 1
 
                 simplex_rows.append({
                     'simplex_id': simplex_id,
@@ -1824,14 +1835,25 @@ class GeneralEquilibrium:
                 f"[EQ] Completed lower-hull sweep: "
                 f"processed={len(self.processed_temperature_slices)}/{self.total_temperature_slices}, "
                 f"success={len(self.successful_temperature_slices)}, "
-                f"failed={len(self.failed_temperature_slices)}"
+                f"failed={len(self.failed_temperature_slices)}, "
+                f"dropped_single_phase_simplices={dropped_single_phase_simplices}, "
+                f"dropped_single_phase_vertices={dropped_single_phase_vertices}"
             )
+
+        # Lightweight diagnostics for downstream scripts/harnesses.
+        self._solve_prune_stats = {
+            'drop_single_phase_simplices': bool(drop_single_phase_simplices),
+            'dropped_single_phase_simplices': int(dropped_single_phase_simplices),
+            'dropped_single_phase_vertices': int(dropped_single_phase_vertices),
+            'n_retained_equilibrium_rows': int(len(self.equilibrium_df)),
+            'n_retained_simplex_rows': int(len(self.simplex_df)),
+        }
 
         return self.equilibrium_df
 
     def get_temperature_progress(self) -> Dict[str, Any]:
         """Return tracked per-temperature solve progress for downstream reporting."""
-        return {
+        out = {
             'total_temperature_slices': int(self.total_temperature_slices),
             'n_processed': int(len(self.processed_temperature_slices)),
             'n_successful': int(len(self.successful_temperature_slices)),
@@ -1841,6 +1863,9 @@ class GeneralEquilibrium:
             'failed_temperature_slices': list(self.failed_temperature_slices),
             'temperature_slice_status': dict(self.temperature_slice_status),
         }
+        if hasattr(self, '_solve_prune_stats'):
+            out['prune_stats'] = dict(self._solve_prune_stats)
+        return out
 
     @staticmethod
     def _cache_file_paths(cache_dir: str, cache_name: str) -> Dict[str, str]:
