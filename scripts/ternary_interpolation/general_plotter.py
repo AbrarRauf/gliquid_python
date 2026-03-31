@@ -1,4 +1,4 @@
-"""Post-processing helpers for stitched General HSX lower-hull cache artifacts."""
+"""Post-processing helpers for stitched General lower-hull cache artifacts."""
 
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ class CacheBlock:
 	manifest: Dict[str, Any]
 
 
-class GeneralHSXPostprocess:
+class GeneralPostProcess:
 	"""Load and stitch lower-hull cache artifacts for one system.
 
 	Assumed input layout:
@@ -178,7 +178,7 @@ class GeneralHSXPostprocess:
 		recursive: bool = True,
 		load_gtx: bool = True,
 		liquid_aliases: Optional[Sequence[str]] = None,
-	) -> "GeneralHSXPostprocess":
+	) -> "GeneralPostProcess":
 		obj = cls(
 			system_cache_dir=system_cache_dir,
 			recursive=recursive,
@@ -436,7 +436,7 @@ class GeneralHSXPostprocess:
 			"coexisting_solids_union": sorted(union_solids),
 		}
 
-	def load_and_stitch(self) -> "GeneralHSXPostprocess":
+	def load_and_stitch(self) -> "GeneralPostProcess":
 		manifest_paths = self._discover_manifest_paths()
 		blocks = [self._build_block(p) for p in manifest_paths]
 		blocks = sorted(blocks, key=lambda b: (b.t_min, b.t_max, b.stem))
@@ -628,6 +628,91 @@ class GeneralHSXPostprocess:
 		self.phase_boundary_equilibrium_path = out_path
 		return out_path
 
+	def save_phase_boundary_sample_csv(
+		self,
+		output_dir: Optional[str] = None,
+		filename: Optional[str] = None,
+		max_rows: int = 10000,
+		n_temp_bins: int = 24,
+		random_state: int = 42,
+		dump_full: bool = False,
+	) -> Path:
+		"""Save a stratified sample CSV snapshot of phase-boundary equilibrium rows.
+
+		Sampling targets broad coverage across phases and temperature bins while
+		respecting a maximum row count unless dump_full=True.
+		"""
+		if self.phase_boundary_equilibrium_df.empty:
+			self.extract_phase_boundary_equilibrium(min_unique_phases=2)
+
+		if self.phase_boundary_equilibrium_df.empty:
+			raise ValueError("No phase-boundary equilibrium rows available to sample.")
+
+		if output_dir is None:
+			out_dir = self._default_plotter_dir()
+		else:
+			out_dir = Path(output_dir)
+		out_dir.mkdir(parents=True, exist_ok=True)
+
+		df = self.phase_boundary_equilibrium_df.copy()
+		temp_col = "T_K" if "T_K" in df.columns else None
+		phase_col = "Phase" if "Phase" in df.columns else None
+
+		dump_full = bool(dump_full)
+		max_rows = int(max(1, max_rows))
+		n_temp_bins = int(max(2, n_temp_bins))
+
+		if (not dump_full) and len(df) > max_rows and temp_col is not None and phase_col is not None:
+			work = df.copy()
+			n_unique_t = int(work[temp_col].nunique())
+			q = int(max(2, min(n_temp_bins, n_unique_t))) if n_unique_t > 0 else 2
+
+			try:
+				work["_temp_bin"] = pd.qcut(work[temp_col].astype(float), q=q, duplicates="drop")
+			except Exception:
+				work["_temp_bin"] = "all"
+
+			groups = work.groupby([phase_col, "_temp_bin"], observed=True, sort=False)
+			n_groups = max(1, int(groups.ngroups))
+			per_group = max(1, max_rows // n_groups)
+
+			parts = []
+			for _, g in groups:
+				n_take = min(len(g), per_group)
+				parts.append(g.sample(n=n_take, random_state=random_state))
+
+			sampled = pd.concat(parts, axis=0) if parts else work.iloc[0:0].copy()
+
+			if len(sampled) < max_rows:
+				remaining = work.drop(index=sampled.index, errors="ignore")
+				need = max_rows - len(sampled)
+				if len(remaining) > 0 and need > 0:
+					extra = remaining.sample(n=min(need, len(remaining)), random_state=random_state)
+					sampled = pd.concat([sampled, extra], axis=0)
+
+			if len(sampled) > max_rows:
+				sampled = sampled.sample(n=max_rows, random_state=random_state)
+
+			df_out = sampled.drop(columns=["_temp_bin"], errors="ignore")
+			if temp_col in df_out.columns and phase_col in df_out.columns:
+				df_out = df_out.sort_values(by=[phase_col, temp_col]).reset_index(drop=True)
+			else:
+				df_out = df_out.reset_index(drop=True)
+		else:
+			df_out = df.copy().reset_index(drop=True)
+
+		if filename is None:
+			t_min = float(df["T_K"].min()) if "T_K" in df.columns else 0.0
+			t_max = float(df["T_K"].max()) if "T_K" in df.columns else 0.0
+			if dump_full:
+				filename = f"{self.system_name or 'system'}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium_full.csv"
+			else:
+				filename = f"{self.system_name or 'system'}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium_sample.csv"
+
+		out_path = out_dir / filename
+		df_out.to_csv(out_path, index=False)
+		return out_path
+
 	def evaluate_tmax_filter_change(self, atol: float = 1e-9) -> Dict[str, Any]:
 		"""Evaluate temperature-boundary diagnostics on stitched equilibrium data.
 
@@ -712,7 +797,7 @@ class PhaseBoundaryPlotter:
 	"""Slice and plot stitched phase-boundary equilibrium data.
 
 	This class assumes the reduced data format produced by
-	GeneralHSXPostprocess.save_phase_boundary_equilibrium(...).
+	GeneralPostProcess.save_phase_boundary_equilibrium(...).
 	"""
 
 	def __init__(
@@ -968,6 +1053,82 @@ class PhaseBoundaryPlotter:
 			)
 		return self._attach_coexisting_phases(out)
 
+	def _interpolate_slice_for_plot(
+		self,
+		axis_components: Sequence[str],
+		fixed_components: Dict[str, float],
+		tolerance: Optional[float] = None,
+		k_nearest: int = 8,
+	) -> pd.DataFrame:
+		"""Interpolate off-grid constrained slices from nearby grid points.
+
+		Interpolation is done per (phase, quantized axis composition) group using
+		inverse-distance weights over fixed-component space.
+		"""
+		df = self._full_component_df()
+		for c in list(axis_components) + list(fixed_components.keys()):
+			if c not in df.columns:
+				raise ValueError(f"Unknown component for interpolation: {c}")
+
+		tol = self._resolve_tol(tolerance)
+		k_nearest = max(2, int(k_nearest))
+		rows: List[Dict[str, Any]] = []
+
+		for phase_name, g in df.groupby("Phase", sort=False):
+			g_local = g.copy()
+			axis_arr = g_local[list(axis_components)].to_numpy(dtype=float)
+			q = np.round(axis_arr / tol).astype(np.int64)
+			g_local["_axis_key"] = [tuple(v.tolist()) for v in q]
+
+			for _, gg in g_local.groupby("_axis_key", sort=False):
+				if len(gg) < 2:
+					continue
+
+				d = np.zeros(len(gg), dtype=float)
+				for comp_name, target in fixed_components.items():
+					d += (gg[comp_name].to_numpy(dtype=float) - float(target)) ** 2
+				d = np.sqrt(d)
+
+				order = np.argsort(d)
+				sel = order[: min(len(order), k_nearest)]
+				gg_sel = gg.iloc[sel]
+				d_sel = d[sel]
+
+				weights = 1.0 / np.maximum(d_sel, 1e-12)
+				w_sum = float(np.sum(weights))
+				if w_sum <= 0.0 or not np.isfinite(w_sum):
+					continue
+				weights = weights / w_sum
+
+				row: Dict[str, Any] = {"Phase": str(phase_name)}
+				for col in ["T_K", "T_C", "G"]:
+					if col in gg_sel.columns:
+						row[col] = float(np.sum(gg_sel[col].to_numpy(dtype=float) * weights))
+
+				for comp_name in fixed_components:
+					row[comp_name] = float(fixed_components[comp_name])
+
+				# Keep plotting-axis compositions from local neighboring points.
+				for comp_name in axis_components:
+					row[comp_name] = float(np.sum(gg_sel[comp_name].to_numpy(dtype=float) * weights))
+
+				# Preserve extra composition columns when present.
+				for comp_name in self._full_component_names():
+					if comp_name in row:
+						continue
+					if comp_name in gg_sel.columns:
+						row[comp_name] = float(np.sum(gg_sel[comp_name].to_numpy(dtype=float) * weights))
+
+				row["simplex_id"] = np.nan
+				row["source_row_id"] = np.nan
+				rows.append(row)
+
+		if not rows:
+			return pd.DataFrame()
+
+		out = pd.DataFrame(rows)
+		return self._attach_coexisting_phases(out)
+
 	def _phase_extrema_mode_for_slice(self, phase: Any) -> Optional[str]:
 		"""Return extrema mode for a phase in slice plotting: min for liquid, max for SS."""
 		p = str(phase)
@@ -1027,7 +1188,16 @@ class PhaseBoundaryPlotter:
 			raise ValueError(
 				f"fixed_components cannot include plotted binary components ({comp_a}, {comp_b})."
 			)
-		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		try:
+			df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		except ValueError:
+			df = self._interpolate_slice_for_plot(
+				axis_components=[comp_a, comp_b],
+				fixed_components=fixed_components,
+				tolerance=tolerance,
+			)
+			if df.empty:
+				raise
 		if comp_a not in df.columns or comp_b not in df.columns:
 			raise ValueError(f"Binary components must exist in dataframe columns: {comp_a}, {comp_b}")
 
@@ -1123,7 +1293,16 @@ class PhaseBoundaryPlotter:
 			raise ValueError(
 				f"fixed_components cannot include plotted ternary components ({comp_a}, {comp_b}, {comp_c})."
 			)
-		df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		try:
+			df = self.filter_by_fixed_components(fixed_components=fixed_components, tolerance=tolerance)
+		except ValueError:
+			df = self._interpolate_slice_for_plot(
+				axis_components=[comp_a, comp_b, comp_c],
+				fixed_components=fixed_components,
+				tolerance=tolerance,
+			)
+			if df.empty:
+				raise
 		for col in [comp_a, comp_b, comp_c]:
 			if col not in df.columns:
 				raise ValueError(f"Ternary component not found: {col}")
@@ -1737,6 +1916,8 @@ def main_post() -> None:
 	load_and_stitch = _parse_bool_env("GP_LOAD_AND_STITCH", True)
 	extract_phase_boundary = _parse_bool_env("GP_EXTRACT_PHASE_BOUNDARY", True)
 	save_phase_boundary = _parse_bool_env("GP_SAVE_PHASE_BOUNDARY", True)
+	dump_full_csv = _parse_bool_env("GP_DUMP_FULL_EQUILIBRIUM_CSV", False)
+	sample_max_rows = _parse_int_env("GP_SAMPLE_MAX_ROWS", 10000)
 	notify_tmax_unchanged = _parse_bool_env("GP_NOTIFY_TMAX_UNCHANGED", True)
 	notify_tmin_contains_liquid = _parse_bool_env("GP_NOTIFY_TMIN_CONTAINS_LIQUID", True)
 	tmax_change_atol = _parse_float_env("GP_TMAX_CHANGE_ATOL", 1e-9)
@@ -1752,13 +1933,15 @@ def main_post() -> None:
 	print(f"Execute full load_and_stitch: {load_and_stitch}")
 	print(f"Extract phase-boundary simplices: {extract_phase_boundary}")
 	print(f"Save phase-boundary dataframe: {save_phase_boundary}")
+	print(f"Dump full equilibrium CSV: {dump_full_csv}")
+	print(f"Sample max rows (when not full): {sample_max_rows}")
 	print(f"Notify when Tmax unchanged after filter: {notify_tmax_unchanged}")
 	print(f"Notify when Tmin contains liquid: {notify_tmin_contains_liquid}")
 	print(f"Tmax change tolerance: {tmax_change_atol}")
 	print(f"Plotter dir override: {plotter_dir_override}")
 	print(f"Rows to print from reconstructed equilibrium_df: {print_rows}")
 
-	post = GeneralHSXPostprocess(
+	post = GeneralPostProcess(
 		system_cache_dir=system_dir,
 		recursive=recursive,
 		load_gtx=load_gtx,
@@ -1814,6 +1997,15 @@ def main_post() -> None:
 			if save_phase_boundary:
 				out_path = post.save_phase_boundary_equilibrium(output_dir=plotter_dir_override)
 				print(f"Saved phase-boundary equilibrium file: {out_path}")
+				sample_csv_path = post.save_phase_boundary_sample_csv(
+					output_dir=plotter_dir_override,
+					max_rows=sample_max_rows,
+					dump_full=dump_full_csv,
+				)
+				if dump_full_csv:
+					print(f"Saved phase-boundary full CSV: {sample_csv_path}")
+				else:
+					print(f"Saved phase-boundary sample CSV: {sample_csv_path}")
 
 			tmax_diag = post.evaluate_tmax_filter_change(atol=tmax_change_atol)
 			print("\n[Temperature-boundary diagnostic]")

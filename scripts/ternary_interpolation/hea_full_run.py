@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from math import comb
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -18,7 +20,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from general_plotter import GeneralHSXPostprocess, PhaseBoundaryPlotter
+from general_plotter import GeneralPostProcess, PhaseBoundaryPlotter
 
 
 def _infer_comp_cols(df: pd.DataFrame) -> List[str]:
@@ -32,6 +34,246 @@ def _nearest_available(series: pd.Series, target: float) -> float:
         return float(target)
     idx = int(np.argmin(np.abs(vals - float(target))))
     return float(vals[idx])
+
+
+def _is_liquid_phase(phase: str) -> bool:
+    return str(phase).strip().upper() in {"L", "LIQUID"}
+
+
+def _is_solution_phase(phase: str) -> bool:
+    p = str(phase).upper()
+    if _is_liquid_phase(p):
+        return False
+    return re.search(r"(FCC|BCC|HCP|A1|A2|A3|A4|SOLUTION|_SS|\bSS\b)", p) is not None
+
+
+def _full_named_df(df: pd.DataFrame, comp_cols: Sequence[str], element_names: Sequence[str]) -> pd.DataFrame:
+    out = df.copy()
+    out["x_dep"] = 1.0 - out[list(comp_cols)].sum(axis=1)
+    full_cols = ["x_dep"] + list(comp_cols)
+    if len(full_cols) != len(element_names):
+        raise ValueError(f"Component/element length mismatch: {len(full_cols)} vs {len(element_names)}")
+    for src, dst in zip(full_cols, element_names):
+        out[dst] = out[src].astype(float)
+    return out
+
+
+def _composition_dict(row: pd.Series, element_names: Sequence[str], precision: int = 4) -> Dict[str, float]:
+    return {f"x_{el}": round(float(row[el]), precision) for el in element_names}
+
+
+def _composition_key_from_row(row: pd.Series, element_names: Sequence[str], ndigits: int = 8) -> Tuple[float, ...]:
+    return tuple(round(float(row[el]), ndigits) for el in element_names)
+
+
+def _composition_key_grid(row: pd.Series, element_names: Sequence[str], grid_delta: float) -> Tuple[int, ...]:
+    if grid_delta <= 0.0:
+        return tuple(int(round(float(row[el]) * 1e8)) for el in element_names)
+    return tuple(int(round(float(row[el]) / grid_delta)) for el in element_names)
+
+
+def _save_boundary_csv_snapshot(
+    df: pd.DataFrame,
+    output_dir: Path,
+    system_name: str,
+    max_rows: int = 10000,
+    dump_full: bool = False,
+    random_state: int = 42,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    t_min = float(df["T_K"].min()) if "T_K" in df.columns and not df.empty else 0.0
+    t_max = float(df["T_K"].max()) if "T_K" in df.columns and not df.empty else 0.0
+
+    if dump_full or len(df) <= max_rows or "Phase" not in df.columns or "T_K" not in df.columns:
+        out_df = df.copy().reset_index(drop=True)
+        name = f"{system_name}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium_full.csv" if dump_full else f"{system_name}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium_sample.csv"
+    else:
+        work = df.copy()
+        n_unique_t = int(work["T_K"].nunique())
+        q = int(max(2, min(24, n_unique_t))) if n_unique_t > 0 else 2
+        try:
+            work["_temp_bin"] = pd.qcut(work["T_K"].astype(float), q=q, duplicates="drop")
+        except Exception:
+            work["_temp_bin"] = "all"
+        groups = work.groupby(["Phase", "_temp_bin"], observed=True, sort=False)
+        n_groups = max(1, int(groups.ngroups))
+        per_group = max(1, int(max_rows) // n_groups)
+
+        parts = []
+        for _, g in groups:
+            parts.append(g.sample(n=min(len(g), per_group), random_state=random_state))
+        out_df = pd.concat(parts, axis=0) if parts else work.iloc[0:0].copy()
+
+        if len(out_df) < max_rows:
+            rem = work.drop(index=out_df.index, errors="ignore")
+            need = int(max_rows) - len(out_df)
+            if need > 0 and len(rem) > 0:
+                out_df = pd.concat([out_df, rem.sample(n=min(need, len(rem)), random_state=random_state)], axis=0)
+        if len(out_df) > max_rows:
+            out_df = out_df.sample(n=int(max_rows), random_state=random_state)
+        out_df = out_df.drop(columns=["_temp_bin"], errors="ignore").sort_values(by=["Phase", "T_K"]).reset_index(drop=True)
+        name = f"{system_name}_T{t_min:.2f}_{t_max:.2f}_phase_boundary_equilibrium_sample.csv"
+
+    out_path = output_dir / name
+    out_df.to_csv(out_path, index=False)
+    return out_path
+
+
+def _compute_hea_summary(
+    equilibrium_df: pd.DataFrame,
+    element_names: Sequence[str],
+    hea_min_fraction: float = 0.10,
+    grid_delta: float = 0.05,
+) -> Dict[str, object]:
+    eq = equilibrium_df.copy()
+    if eq.empty:
+        return {
+            "hea_filter": {"min_element_fraction": float(hea_min_fraction), "n_rows_in_scope": 0},
+            "hea_eutectic": None,
+            "phases_at_tmin_not_tmax": [],
+            "high_t_liquid_coverage": {"complete": None, "message": "No data available"},
+            "solution_phase_highest_melting_with_liquid_boundary": {},
+            "intermetallic_highest_melting_with_liquid_boundary": {},
+            "warnings": {
+                "liquid_present_at_tmin": None,
+                "incomplete_liquid_coverage_high_t": None,
+            },
+        }
+
+    comp_cols = _infer_comp_cols(eq)
+    eq_full = _full_named_df(eq, comp_cols=comp_cols, element_names=element_names)
+    hea_mask = np.ones(len(eq_full), dtype=bool)
+    for el in element_names:
+        hea_mask &= eq_full[el].to_numpy(dtype=float) >= float(hea_min_fraction) - 1e-12
+    eq_hea = eq_full.loc[hea_mask].copy().reset_index(drop=True)
+
+    # Build simplex -> phase-set map once (for coexistence reporting).
+    simplex_phase_sets = (
+        eq.groupby("simplex_id")["Phase"]
+        .apply(lambda s: {str(v) for v in s.tolist()})
+        .to_dict()
+    ) if "simplex_id" in eq.columns else {}
+
+    # 1) HEA eutectic from liquid low-T per composition, then HEA composition filter.
+    hea_eutectic = None
+    liquid = eq_full[eq_full["Phase"].astype(str).apply(_is_liquid_phase)].copy()
+    liq_min_rows = pd.DataFrame()
+    if not liquid.empty:
+        liquid = liquid.copy()
+        liquid["_ckey"] = liquid.apply(lambda r: _composition_key_grid(r, element_names, grid_delta), axis=1)
+        idx_min = liquid.groupby("_ckey")["T_K"].idxmin()
+        liq_min_rows = liquid.loc[idx_min].copy().reset_index(drop=True)
+
+    if not liq_min_rows.empty:
+        hea_liq = liq_min_rows.copy()
+        for el in element_names:
+            hea_liq = hea_liq[hea_liq[el].to_numpy(dtype=float) >= float(hea_min_fraction) - 1e-12]
+        if not hea_liq.empty:
+            rep = hea_liq.sort_values(by=["T_K", "G" if "G" in hea_liq.columns else "T_K"], ascending=[True, True]).iloc[0]
+            sid = int(rep["simplex_id"]) if "simplex_id" in rep and pd.notna(rep["simplex_id"]) else None
+            phases = sorted(simplex_phase_sets.get(sid, set())) if sid is not None else []
+            hea_eutectic = {
+                "temperature_K": float(rep["T_K"]),
+                "temperature_C": float(rep["T_K"] - 273.15),
+                "composition": _composition_dict(rep, element_names=element_names, precision=4),
+                "simplex_id": sid,
+                "phases_in_simplex": phases,
+                "coexisting_solids": [p for p in phases if not _is_liquid_phase(p)],
+            }
+
+    # 2) Phases at t_min but not t_max (HEA scope), and liquid coverage metric.
+    if not eq_hea.empty:
+        tmin = float(eq_hea["T_K"].min())
+        tmax = float(eq_hea["T_K"].max())
+        p_tmin = set(eq_hea[np.isclose(eq_hea["T_K"].to_numpy(dtype=float), tmin, atol=1e-9, rtol=0.0)]["Phase"].astype(str).tolist())
+        p_tmax = set(eq_hea[np.isclose(eq_hea["T_K"].to_numpy(dtype=float), tmax, atol=1e-9, rtol=0.0)]["Phase"].astype(str).tolist())
+        phases_tmin_not_tmax = sorted(p_tmin - p_tmax)
+        liquid_present_tmin = any(_is_liquid_phase(p) for p in p_tmin)
+    else:
+        tmin = None
+        tmax = None
+        p_tmin = set()
+        p_tmax = set()
+        phases_tmin_not_tmax = []
+        liquid_present_tmin = None
+
+    liquid_cov = {
+        "complete": None,
+        "message": "No data available",
+        "coverage_percent": None,
+        "n_grid_points_total": 0,
+        "n_compositions_with_liquid_min_t": 0,
+    }
+    if not liq_min_rows.empty:
+        n_comp = len(element_names)
+        n_steps = int(round(1.0 / grid_delta)) if grid_delta > 0 else 0
+        total_grid = comb(n_steps + n_comp - 1, n_comp - 1) if (grid_delta > 0 and abs(n_steps * grid_delta - 1.0) < 1e-8) else int(liq_min_rows["_ckey"].nunique())
+        n_liq = int(liq_min_rows["_ckey"].nunique())
+        cov_pct = (100.0 * n_liq / float(total_grid)) if total_grid > 0 else None
+        complete = bool((cov_pct is not None) and (cov_pct > 99.0))
+        liquid_cov = {
+            "complete": complete,
+            "message": "complete liquidus coverage at high T" if complete else "incomplete liquid coverage at high T",
+            "coverage_percent": cov_pct,
+            "n_grid_points_total": int(total_grid),
+            "n_compositions_with_liquid_min_t": int(n_liq),
+        }
+
+    # 3) Highest T for SS phases by per-composition Tmax; intermetallic highest T overall.
+    phases_all = sorted({str(p) for p in eq["Phase"].astype(str).tolist()})
+    solution_phases = [p for p in phases_all if (not _is_liquid_phase(p)) and _is_solution_phase(p)]
+    intermetallic_phases = [p for p in phases_all if (not _is_liquid_phase(p)) and (not _is_solution_phase(p))]
+
+    solution_stats: Dict[str, Dict[str, object]] = {}
+    for phase in solution_phases:
+        if eq_hea.empty:
+            continue
+        cand = eq_hea[eq_hea["Phase"].astype(str) == phase].copy()
+        if cand.empty:
+            continue
+        cand["_ckey"] = cand.apply(lambda r: _composition_key_grid(r, element_names, grid_delta), axis=1)
+        idx_max = cand.groupby("_ckey")["T_K"].idxmax()
+        rep = cand.loc[idx_max].sort_values(by=["T_K", "G" if "G" in cand.columns else "T_K"], ascending=[False, True]).iloc[0]
+        solution_stats[phase] = {
+            "highest_melting_T_K": float(rep["T_K"]),
+            "highest_melting_T_C": float(rep["T_K"] - 273.15),
+            "composition": _composition_dict(rep, element_names=element_names, precision=4),
+            "simplex_id": int(rep["simplex_id"]) if "simplex_id" in rep and pd.notna(rep["simplex_id"]) else None,
+        }
+
+    intermetallic_stats: Dict[str, Dict[str, object]] = {}
+    for phase in intermetallic_phases:
+        cand = eq_full[eq_full["Phase"].astype(str) == phase].copy()
+        if cand.empty:
+            continue
+        rep = cand.sort_values(by=["T_K", "G"], ascending=[False, True]).iloc[0]
+        sid = int(rep["simplex_id"]) if "simplex_id" in rep and pd.notna(rep["simplex_id"]) else None
+        phases = simplex_phase_sets.get(sid, set()) if sid is not None else set()
+        if not any(_is_liquid_phase(p) for p in phases):
+            continue
+        intermetallic_stats[phase] = {
+            "highest_melting_T_K": float(rep["T_K"]),
+            "highest_melting_T_C": float(rep["T_K"] - 273.15),
+            "simplex_id": sid,
+            "coexists_with_liquid": True,
+        }
+
+    warn_incomplete_liq_cov = None if liquid_cov.get("complete") is None else (not bool(liquid_cov["complete"]))
+
+    return {
+        "hea_filter": {
+            "min_element_fraction": float(hea_min_fraction),
+            "n_rows_in_scope": int(len(eq_hea)),
+        },
+        "hea_eutectic": hea_eutectic,
+        "high_t_liquid_coverage": liquid_cov,
+        "solution_phase_highest_melting_with_liquid_boundary": solution_stats,
+        "intermetallic_highest_melting_with_liquid_boundary": intermetallic_stats,
+        "warnings": {
+            "liquid_present_at_tmin": liquid_present_tmin,
+            "incomplete_liquid_coverage_high_t": warn_incomplete_liq_cov,
+        },
+    }
 
 
 def _reduce_to_quaternary_df(
@@ -84,6 +326,7 @@ def _reduce_to_quaternary_df(
 
 def main_post() -> None:
     system_name = "Al-Hf-Nb-W-Zr"
+    element_names = ["Al", "Hf", "Nb", "W", "Zr"]
     system_cache_dir = Path(
         os.getenv(
             "HEA_SYSTEM_CACHE_DIR",
@@ -91,49 +334,91 @@ def main_post() -> None:
         )
     )
     plotter_dir = Path(os.getenv("HEA_PLOTTER_DIR", "all_dumps/quaternary_demo/plotter_dir"))
+    dump_full_csv = os.getenv("HEA_DUMP_FULL_EQUILIBRIUM_CSV", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+    sample_max_rows = int(os.getenv("HEA_SAMPLE_MAX_ROWS", "10000"))
+    hea_min_fraction = float(os.getenv("HEA_MIN_ELEMENT_FRACTION", "0.15"))
+    use_existing_boundary = os.getenv("HEA_USE_EXISTING_BOUNDARY_FILE", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+    grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.05"))
 
     print("=" * 80)
     print("HEA MAIN_POST")
     print("=" * 80)
     print(f"System cache dir: {system_cache_dir}")
     print(f"Plotter dir: {plotter_dir}")
+    print(f"Dump full equilibrium CSV: {dump_full_csv}")
+    print(f"Sample max rows (when not full): {sample_max_rows}")
+    print(f"HEA minimum element fraction: {hea_min_fraction}")
+    print(f"Use existing boundary file: {use_existing_boundary}")
+    print(f"Grid delta: {grid_delta}")
 
-    post = GeneralHSXPostprocess(
-        system_cache_dir=str(system_cache_dir),
-        recursive=True,
-        load_gtx=True,
+    plotter_dir.mkdir(parents=True, exist_ok=True)
+    phase_boundary_path = None
+    phase_boundary_df = None
+
+    if use_existing_boundary:
+        explicit_file = os.getenv("HEA_PHASE_BOUNDARY_FILE")
+        if explicit_file:
+            candidate = Path(explicit_file)
+            if candidate.exists():
+                phase_boundary_path = candidate
+        if phase_boundary_path is None:
+            candidates = sorted(plotter_dir.glob(f"{system_name}_T*_phase_boundary_equilibrium.pkl.gz"))
+            if candidates:
+                phase_boundary_path = candidates[-1]
+        if phase_boundary_path is not None and phase_boundary_path.exists():
+            phase_boundary_df = pd.read_pickle(phase_boundary_path, compression="gzip")
+
+    if phase_boundary_df is None:
+        post = GeneralPostProcess(
+            system_cache_dir=str(system_cache_dir),
+            recursive=True,
+            load_gtx=True,
+        )
+        post.load_and_stitch()
+        post.extract_phase_boundary_equilibrium(min_unique_phases=2)
+        phase_boundary_path = post.save_phase_boundary_equilibrium(output_dir=str(plotter_dir))
+        phase_boundary_df = post.phase_boundary_equilibrium_df.copy()
+
+    phase_boundary_sample_csv = _save_boundary_csv_snapshot(
+        df=phase_boundary_df,
+        output_dir=plotter_dir,
+        system_name=system_name,
+        max_rows=sample_max_rows,
+        dump_full=dump_full_csv,
     )
-    post.load_and_stitch()
-    post.extract_phase_boundary_equilibrium(min_unique_phases=2)
-    phase_boundary_path = post.save_phase_boundary_equilibrium(output_dir=str(plotter_dir))
 
-    temp_diag = post.evaluate_tmax_filter_change(atol=1e-9)
-    warn_tmax = bool(temp_diag.get("tmax_changed_after_filter") is False)
-    warn_tmin = bool(temp_diag.get("liquid_present_at_full_tmin") is True)
+    complete_summary = _compute_hea_summary(
+        equilibrium_df=phase_boundary_df,
+        element_names=element_names,
+        hea_min_fraction=hea_min_fraction,
+        grid_delta=grid_delta,
+    )
 
     summary = {
         "system": system_name,
         "system_cache_dir": str(system_cache_dir),
         "phase_boundary_file": str(phase_boundary_path),
-        "global_lowest_eutectic": post.global_eutectic,
-        "temperature_boundary_diagnostic": temp_diag,
-        "warnings": {
-            "tmax_filter_unchanged": warn_tmax,
-            "tmin_contains_liquid": warn_tmin,
-        },
+        "phase_boundary_sample_csv": str(phase_boundary_sample_csv),
+        "phase_boundary_csv_mode": "full" if dump_full_csv else "sample",
+        "post_source": "existing_boundary_file" if use_existing_boundary else "stitched_from_blocks",
+        "complete_summary": complete_summary,
     }
 
-    plotter_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = plotter_dir / f"{system_name}_eutectic_summary.json"
+    summary_path = plotter_dir / f"{system_name}_summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, default=str)
 
     print(f"Saved phase-boundary file: {phase_boundary_path}")
-    print(f"Saved eutectic summary: {summary_path}")
-    if warn_tmax:
-        print("[WARN] Tmax filter unchanged; consider extending upper T range.")
-    if warn_tmin:
-        print("[WARN] Tmin slice contains liquid; consider extending lower T range.")
+    if dump_full_csv:
+        print(f"Saved phase-boundary full CSV: {phase_boundary_sample_csv}")
+    else:
+        print(f"Saved phase-boundary sample CSV: {phase_boundary_sample_csv}")
+    print(f"Saved complete summary: {summary_path}")
+    w = complete_summary.get("warnings", {}) if isinstance(complete_summary, dict) else {}
+    if w.get("liquid_present_at_tmin") is True:
+        print("[WARN] L phase present at t_min within HEA composition scope.")
+    if w.get("incomplete_liquid_coverage_high_t") is True:
+        print("[WARN] Incomplete liquid coverage at high T within HEA composition scope.")
 
 
 def main_viz() -> None:
@@ -333,6 +618,7 @@ def main_viz() -> None:
 
 
 if __name__ == "__main__":
+    # mode = os.getenv("HEA_MAIN", "post").strip().lower()
     mode = os.getenv("HEA_MAIN", "viz").strip().lower()
     if mode == "post":
         main_post()
