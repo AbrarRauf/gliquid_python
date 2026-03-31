@@ -142,6 +142,10 @@ def main_viz() -> None:
     grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.05"))
     tol = float(os.getenv("HEA_SLICE_TOL", str(max(0.5 * grid_delta, 1e-6))))
     use_phase_extrema = os.getenv("HEA_SLICE_PHASE_EXTREMA", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+    use_ternary_phase_mesh = os.getenv("HEA_TERNARY_PHASE_MESH", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+    ss_cluster_factor = float(os.getenv("HEA_TERNARY_SS_CLUSTER_FACTOR", "1.75"))
+    if not use_phase_extrema:
+        use_ternary_phase_mesh = False
 
     plotter_dir = Path(os.getenv("HEA_PLOTTER_DIR", "all_dumps/quaternary_demo/plotter_dir"))
     explicit_file = os.getenv("HEA_PHASE_BOUNDARY_FILE")
@@ -155,7 +159,7 @@ def main_viz() -> None:
             )
         phase_boundary_file = candidates[-1]
 
-    html_out_dir = plotter_dir / "hea_dump"
+    html_out_dir = plotter_dir / "hea_dump_new"
     html_out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -166,6 +170,8 @@ def main_viz() -> None:
     print(f"Grid delta: {grid_delta}")
     print(f"Slice tolerance: {tol}")
     print(f"Slice phase-extrema filter: {use_phase_extrema}")
+    print(f"Ternary phase mesh enabled: {use_ternary_phase_mesh}")
+    print(f"Ternary SS cluster factor: {ss_cluster_factor}")
 
     df = pd.read_pickle(phase_boundary_file, compression="gzip")
     comp_cols = _infer_comp_cols(df)
@@ -243,6 +249,9 @@ def main_viz() -> None:
                     fixed_components=fixed,
                     tolerance=tol,
                     phase_extrema_filter=use_phase_extrema,
+                    ternary_phase_mesh=use_ternary_phase_mesh,
+                    slice_grid_delta=grid_delta,
+                    ss_cluster_factor=ss_cluster_factor,
                     title=f"{a}-{b}-{c} ternary | fixed {fixed}",
                     color_by="Phase",
                 )

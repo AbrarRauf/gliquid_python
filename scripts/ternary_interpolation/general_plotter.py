@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy.spatial import cKDTree
+from scipy.spatial import Delaunay, QhullError, cKDTree
 
 
 SS_FIXED_COLORS = {
@@ -1113,7 +1113,10 @@ class PhaseBoundaryPlotter:
 		fixed_components: Dict[str, float],
 		tolerance: Optional[float] = None,
 		phase_extrema_filter: bool = False,
+		ternary_phase_mesh: bool = False,
+		slice_grid_delta: Optional[float] = None,
 		title: Optional[str] = None,
+		ss_cluster_factor: float = 1.75,
 		color_by: str = "Phase",
 	) -> go.Figure:
 		if comp_a in fixed_components or comp_b in fixed_components or comp_c in fixed_components:
@@ -1141,6 +1144,9 @@ class PhaseBoundaryPlotter:
 			if df.empty:
 				raise ValueError("Phase-extrema filter removed all rows for this ternary slice.")
 			s = df[comp_a].to_numpy(dtype=float) + df[comp_b].to_numpy(dtype=float) + df[comp_c].to_numpy(dtype=float)
+		else:
+			# Mesh surfaces require per-composition extrema filtering for stable triangulation.
+			ternary_phase_mesh = False
 
 		df["a_norm"] = df[comp_a].to_numpy(dtype=float) / s
 		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
@@ -1156,7 +1162,8 @@ class PhaseBoundaryPlotter:
 		fig = go.Figure()
 		if color_by == "Phase":
 			color_map = self._phase_color_map(df["Phase"].astype(str).tolist())
-			for phase_name, g in df.groupby("Phase"):
+
+			def _add_ternary_scatter(g: pd.DataFrame, phase_name: str, showlegend: bool) -> None:
 				fig.add_trace(
 					go.Scatter3d(
 						x=g["tx"],
@@ -1164,6 +1171,7 @@ class PhaseBoundaryPlotter:
 						z=g["T_K"],
 						mode="markers",
 						name=str(phase_name),
+						showlegend=showlegend,
 						marker=dict(size=4, color=color_map[str(phase_name)], opacity=0.8),
 						customdata=np.column_stack([
 							g[comp_a].to_numpy(dtype=float),
@@ -1183,6 +1191,88 @@ class PhaseBoundaryPlotter:
 						),
 					)
 				)
+
+			def _add_ternary_mesh(g: pd.DataFrame, phase_name: str, showlegend: bool) -> bool:
+				if len(g) < 3:
+					return False
+				xy = np.column_stack([
+					g["tx"].to_numpy(dtype=float),
+					g["ty"].to_numpy(dtype=float),
+				])
+				_, uniq_idx = np.unique(np.round(xy, 10), axis=0, return_index=True)
+				if len(uniq_idx) < 3:
+					return False
+				uniq_idx = np.sort(uniq_idx)
+				g_u = g.iloc[uniq_idx].copy().reset_index(drop=True)
+				try:
+					xy_u = np.column_stack([
+						g_u["tx"].to_numpy(dtype=float),
+						g_u["ty"].to_numpy(dtype=float),
+					])
+					triangles = Delaunay(xy_u).simplices
+				except QhullError:
+					return False
+				if len(triangles) == 0:
+					return False
+
+				fig.add_trace(
+					go.Mesh3d(
+						x=g_u["tx"].to_numpy(dtype=float),
+						y=g_u["ty"].to_numpy(dtype=float),
+						z=g_u["T_K"].to_numpy(dtype=float),
+						i=triangles[:, 0],
+						j=triangles[:, 1],
+						k=triangles[:, 2],
+						name=str(phase_name),
+						showlegend=showlegend,
+						color=color_map[str(phase_name)],
+						opacity=0.65,
+						flatshading=True,
+						customdata=np.column_stack([
+							g_u[comp_a].to_numpy(dtype=float),
+							g_u[comp_b].to_numpy(dtype=float),
+							g_u[comp_c].to_numpy(dtype=float),
+							g_u["ternary_slice_total"].to_numpy(dtype=float),
+							g_u["coexisting_phases"].astype(str).to_numpy(),
+						]),
+						hovertemplate=(
+							f"Phase={phase_name}<br>"
+							"T=%{z:.2f} K<br>"
+							f"{comp_a}=%{{customdata[0]:.4f}}<br>"
+							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
+							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
+							"Slice_total=%{customdata[3]:.4f}<br>"
+							"Coexisting=%{customdata[4]}<extra></extra>"
+						),
+					)
+				)
+				return True
+
+			mesh_enabled = bool(ternary_phase_mesh)
+			for phase_name, g in df.groupby("Phase"):
+				phase_str = str(phase_name)
+				showlegend = True
+				is_liq = _phase_is_liquid(phase_str, self.liquid_aliases)
+				is_ss = self._phase_is_solution(phase_str)
+
+				if mesh_enabled and (is_liq or is_ss):
+					if is_liq:
+						if not _add_ternary_mesh(g, phase_str, showlegend=showlegend):
+							_add_ternary_scatter(g, phase_str, showlegend=showlegend)
+						continue
+
+					cluster_base = float(slice_grid_delta) if (slice_grid_delta is not None and float(slice_grid_delta) > 0.0) else self._resolve_tol(tolerance)
+					cluster_tol = max(cluster_base * float(max(ss_cluster_factor, 1.0)), self._resolve_tol(tolerance))
+					mesh_points = g[["tx", "ty"]].to_numpy(dtype=float)
+					components = _connected_components(mesh_points, threshold=cluster_tol + 1e-12)
+					for comp_i, comp_idx in enumerate(components):
+						g_cluster = g.iloc[comp_idx].copy()
+						mesh_ok = _add_ternary_mesh(g_cluster, phase_str, showlegend=showlegend and comp_i == 0)
+						if not mesh_ok:
+							_add_ternary_scatter(g_cluster, phase_str, showlegend=showlegend and comp_i == 0)
+					continue
+
+				_add_ternary_scatter(g, phase_str, showlegend=showlegend)
 		else:
 			fig.add_trace(
 				go.Scatter3d(
@@ -1761,6 +1851,10 @@ def main_viz() -> None:
 	html_out_dir = Path(os.getenv("GP_VIZ_HTML_OUT_DIR", "all_dumps/quaternary_demo/plotter_dir"))
 	grid_delta = _parse_float_env("GP_VIZ_GRID_DELTA", 0.025)
 	slice_phase_extrema_filter = _parse_bool_env("GP_VIZ_SLICE_PHASE_EXTREMA_FILTER", True)
+	ternary_phase_mesh = _parse_bool_env("GP_VIZ_TERNARY_PHASE_MESH", True)
+	ss_cluster_factor = _parse_float_env("GP_VIZ_TERNARY_SS_CLUSTER_FACTOR", 1.75)
+	if not slice_phase_extrema_filter:
+		ternary_phase_mesh = False
 
 	print("=" * 72)
 	print("GENERAL PLOTTER VIZ SMOKE TEST")
@@ -1775,6 +1869,8 @@ def main_viz() -> None:
 	print(f"HTML output dir: {html_out_dir}")
 	print(f"Slice grid delta: {grid_delta}")
 	print(f"Slice phase-extrema filter: {slice_phase_extrema_filter}")
+	print(f"Ternary phase mesh enabled: {ternary_phase_mesh}")
+	print(f"Ternary SS cluster factor: {ss_cluster_factor}")
 
 	phase_boundary_path = Path(phase_boundary_file)
 	if not phase_boundary_path.exists():
@@ -1853,6 +1949,9 @@ def main_viz() -> None:
 		fixed_components={n_w: 0.0},
 		tolerance=max(0.5 * grid_delta, 1e-6),
 		phase_extrema_filter=slice_phase_extrema_filter,
+		ternary_phase_mesh=ternary_phase_mesh,
+		slice_grid_delta=grid_delta,
+		ss_cluster_factor=ss_cluster_factor,
 		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}=0)",
 		color_by="Phase",
 	)
@@ -1865,6 +1964,9 @@ def main_viz() -> None:
 		fixed_components={n_w: nonzero_w_tern},
 		tolerance=max(0.5 * grid_delta, 1e-6),
 		phase_extrema_filter=slice_phase_extrema_filter,
+		ternary_phase_mesh=ternary_phase_mesh,
+		slice_grid_delta=grid_delta,
+		ss_cluster_factor=ss_cluster_factor,
 		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}={nonzero_w_tern:.3f})",
 		color_by="Phase",
 	)
