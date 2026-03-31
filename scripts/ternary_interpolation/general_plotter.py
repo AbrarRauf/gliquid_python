@@ -589,7 +589,14 @@ class GeneralHSXPostprocess:
 		return out_path
 
 	def evaluate_tmax_filter_change(self, atol: float = 1e-9) -> Dict[str, Any]:
-		"""Compare Tmax before/after boundary filtering and inspect top-T phases."""
+		"""Evaluate temperature-boundary diagnostics on stitched equilibrium data.
+
+		Includes:
+		- Tmax before/after phase-boundary filtering.
+		- Whether full Tmax slice is entirely liquid.
+		- Whether full Tmin slice still contains any liquid (indicates lower-T
+		  extension may be needed).
+		"""
 		if self.equilibrium_df.empty:
 			d = {
 				"full_tmax_k": None,
@@ -597,6 +604,9 @@ class GeneralHSXPostprocess:
 				"tmax_changed_after_filter": None,
 				"all_phases_at_full_tmax_are_liquid": None,
 				"phases_at_full_tmax": [],
+				"full_tmin_k": None,
+				"liquid_present_at_full_tmin": None,
+				"phases_at_full_tmin": [],
 			}
 			self.tmax_filter_diagnostic = d
 			return d
@@ -617,12 +627,21 @@ class GeneralHSXPostprocess:
 		phases_at_top = sorted(top_rows["Phase"].astype(str).unique().tolist()) if not top_rows.empty else []
 		all_liquid = bool(len(phases_at_top) > 0 and all(_phase_is_liquid(p, self.liquid_aliases) for p in phases_at_top))
 
+		full_tmin = float(self.equilibrium_df["T_K"].min())
+		bot_mask = np.isclose(self.equilibrium_df["T_K"].to_numpy(dtype=float), full_tmin, atol=atol, rtol=0.0)
+		bot_rows = self.equilibrium_df.loc[bot_mask]
+		phases_at_bottom = sorted(bot_rows["Phase"].astype(str).unique().tolist()) if not bot_rows.empty else []
+		liquid_present_at_bottom = bool(any(_phase_is_liquid(p, self.liquid_aliases) for p in phases_at_bottom))
+
 		d = {
 			"full_tmax_k": full_tmax,
 			"filtered_tmax_k": filtered_tmax,
 			"tmax_changed_after_filter": bool(tmax_changed),
 			"all_phases_at_full_tmax_are_liquid": all_liquid,
 			"phases_at_full_tmax": phases_at_top,
+			"full_tmin_k": full_tmin,
+			"liquid_present_at_full_tmin": liquid_present_at_bottom,
+			"phases_at_full_tmin": phases_at_bottom,
 		}
 		self.tmax_filter_diagnostic = d
 		return d
@@ -908,12 +927,59 @@ class PhaseBoundaryPlotter:
 			)
 		return self._attach_coexisting_phases(out)
 
+	def _phase_extrema_mode_for_slice(self, phase: Any) -> Optional[str]:
+		"""Return extrema mode for a phase in slice plotting: min for liquid, max for SS."""
+		p = str(phase)
+		p_up = p.upper()
+		if _phase_is_liquid(p, self.liquid_aliases):
+			return "min"
+		if ("BCC" in p_up) or ("FCC" in p_up) or ("HCP" in p_up):
+			return "max"
+		return None
+
+	def _reduce_slice_by_phase_extrema(
+		self,
+		df: pd.DataFrame,
+		composition_cols: Sequence[str],
+		tol: Optional[float] = None,
+	) -> pd.DataFrame:
+		"""Apply per-composition phase extrema reduction for binary/ternary slice plots."""
+		if df.empty:
+			return df
+
+		threshold = self._resolve_tol(tol)
+		keep_idx: List[int] = []
+
+		for phase_name, g in df.groupby("Phase", sort=False):
+			mode = self._phase_extrema_mode_for_slice(phase_name)
+			if mode is None:
+				keep_idx.extend(g.index.tolist())
+				continue
+
+			g_local = g.copy()
+			arr = g_local[list(composition_cols)].to_numpy(dtype=float)
+			q = np.round(arr / threshold).astype(np.int64)
+			g_local["_qkey"] = [tuple(row.tolist()) for row in q]
+
+			if mode == "min":
+				idx = g_local.groupby("_qkey")["T_K"].idxmin()
+			else:
+				idx = g_local.groupby("_qkey")["T_K"].idxmax()
+			keep_idx.extend(idx.astype(int).tolist())
+
+		if not keep_idx:
+			return df.iloc[0:0].copy()
+
+		keep_unique = sorted(set(keep_idx))
+		return df.loc[keep_unique].copy().reset_index(drop=True)
+
 	def plot_binary_slice_tx(
 		self,
 		comp_a: str,
 		comp_b: str,
 		fixed_components: Dict[str, float],
 		tolerance: Optional[float] = None,
+		phase_extrema_filter: bool = False,
 		title: Optional[str] = None,
 	) -> go.Figure:
 		if comp_a in fixed_components or comp_b in fixed_components:
@@ -930,6 +996,16 @@ class PhaseBoundaryPlotter:
 		pair_sum = pair_sum[valid]
 		if df.empty:
 			raise ValueError(f"No valid rows for binary ratio {comp_a}/({comp_a}+{comp_b}) after filtering.")
+
+		if phase_extrema_filter:
+			df = self._reduce_slice_by_phase_extrema(
+				df=df,
+				composition_cols=[comp_a, comp_b],
+				tol=tolerance,
+			)
+			if df.empty:
+				raise ValueError("Phase-extrema filter removed all rows for this binary slice.")
+			pair_sum = df[comp_a].to_numpy(dtype=float) + df[comp_b].to_numpy(dtype=float)
 
 		df["x_pair"] = df[comp_a].to_numpy(dtype=float) / pair_sum
 		df["pair_total"] = pair_sum
@@ -961,10 +1037,30 @@ class PhaseBoundaryPlotter:
 		)
 		fig.update_traces(marker=dict(size=6, opacity=0.8))
 		fig.update_layout(
+			autosize=False,
+			width=980,
+			height=700,
 			xaxis_title=f"x_{comp_a} / (x_{comp_a} + x_{comp_b})",
 			yaxis_title="T [K]",
 			plot_bgcolor="white",
+			legend=dict(x=0.95, y=0.95, xanchor="left", yanchor="top"),
+			margin=dict(l=60, r=60, b=60, t=60),
 			title=(title or f"Binary Slice {comp_a}-{comp_b}") + f" | in-system bounds: [0, {pair_total_nominal:.3f}]",
+		)
+		# Draw a full black frame around the binary axes (all four sides).
+		fig.update_xaxes(
+			showline=True,
+			linewidth=2,
+			linecolor="black",
+			mirror=True,
+			ticks="inside",
+		)
+		fig.update_yaxes(
+			showline=True,
+			linewidth=2,
+			linecolor="black",
+			mirror=True,
+			ticks="inside",
 		)
 		return fig
 
@@ -975,6 +1071,7 @@ class PhaseBoundaryPlotter:
 		comp_c: str,
 		fixed_components: Dict[str, float],
 		tolerance: Optional[float] = None,
+		phase_extrema_filter: bool = False,
 		title: Optional[str] = None,
 		color_by: str = "Phase",
 	) -> go.Figure:
@@ -993,6 +1090,16 @@ class PhaseBoundaryPlotter:
 		s = s[valid]
 		if df.empty:
 			raise ValueError(f"No valid ternary rows for {comp_a}-{comp_b}-{comp_c} after filtering.")
+
+		if phase_extrema_filter:
+			df = self._reduce_slice_by_phase_extrema(
+				df=df,
+				composition_cols=[comp_a, comp_b, comp_c],
+				tol=tolerance,
+			)
+			if df.empty:
+				raise ValueError("Phase-extrema filter removed all rows for this ternary slice.")
+			s = df[comp_a].to_numpy(dtype=float) + df[comp_b].to_numpy(dtype=float) + df[comp_c].to_numpy(dtype=float)
 
 		df["a_norm"] = df[comp_a].to_numpy(dtype=float) / s
 		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
@@ -1072,12 +1179,18 @@ class PhaseBoundaryPlotter:
 
 		fig.update_layout(
 			title=title or f"Ternary Slice 3D ({comp_a}-{comp_b}-{comp_c})",
+			legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top'),
+			autosize=False,
+			width=1050,
+			height=760,
+			margin=dict(l=50, r=50, b=50, t=50),
 			scene=dict(
 				xaxis=dict(title="Ternary display x"),
 				yaxis=dict(title="Ternary display y"),
 				zaxis=dict(title="T [K]"),
+				bgcolor='white',
+				camera=dict(projection=dict(type='orthographic')),
 			),
-			margin=dict(l=0, r=0, b=0, t=40),
 		)
 		return fig
 
@@ -1143,7 +1256,7 @@ class PhaseBoundaryPlotter:
 					color=temp_vals,
 					colorscale=colorscale,
 					showscale=True,
-					colorbar=dict(title=f"{temp_col_name.replace('_', ' ')}"),
+					colorbar=dict(title=f"{temp_col_name.replace('_', ' ')}", x=0.93, len=0.78, thickness=16),
 					opacity=0.85,
 				),
 				customdata=hover,
@@ -1173,13 +1286,19 @@ class PhaseBoundaryPlotter:
 
 		fig.update_layout(
 			title=title or f"Quaternary {phase_filter} Temperature Map",
+			autosize=False,
+			width=1050,
+			height=760,
+			legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top'),
 			scene=dict(
 				xaxis=dict(visible=False),
 				yaxis=dict(visible=False),
 				zaxis=dict(visible=False),
 				aspectmode="data",
+				bgcolor='white',
+				camera=dict(projection=dict(type='orthographic')),
 			),
-			margin=dict(l=0, r=0, b=0, t=40),
+			margin=dict(l=50, r=50, b=50, t=50),
 		)
 		return fig
 
@@ -1296,7 +1415,7 @@ class PhaseBoundaryPlotter:
 					color=df["T_K"].to_numpy(dtype=float),
 					colorscale="Viridis",
 					showscale=True,
-					colorbar=dict(title="T [K]"),
+					colorbar=dict(title="T [K]", x=0.93, len=0.78, thickness=16),
 					opacity=0.85,
 				),
 				customdata=hover,
@@ -1326,13 +1445,19 @@ class PhaseBoundaryPlotter:
 
 		fig.update_layout(
 			title=title or "Quaternary Tetrahedral Boundary Temperature Map",
+			autosize=False,
+			width=1050,
+			height=760,
+			legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top'),
 			scene=dict(
 				xaxis=dict(visible=False),
 				yaxis=dict(visible=False),
 				zaxis=dict(visible=False),
 				aspectmode="data",
+				bgcolor='white',
+				camera=dict(projection=dict(type='orthographic')),
 			),
-			margin=dict(l=0, r=0, b=0, t=40),
+			margin=dict(l=50, r=50, b=50, t=50),
 		)
 		return fig
 
@@ -1377,7 +1502,7 @@ class PhaseBoundaryPlotter:
 					color=max_df["T_K"].to_numpy(dtype=float),
 					colorscale="Plasma",
 					showscale=True,
-					colorbar=dict(title="T_max [K]"),
+					colorbar=dict(title="T_max [K]", x=0.93, len=0.78, thickness=16),
 					opacity=0.95,
 					line=dict(color="rgba(0,0,0,0.45)", width=1),
 				),
@@ -1408,13 +1533,19 @@ class PhaseBoundaryPlotter:
 
 		fig.update_layout(
 			title=title or "Quaternary Intermetallic Single-Composition Phase Maxima",
+			autosize=False,
+			width=1050,
+			height=760,
+			legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top'),
 			scene=dict(
 				xaxis=dict(visible=False),
 				yaxis=dict(visible=False),
 				zaxis=dict(visible=False),
 				aspectmode="data",
+				bgcolor='white',
+				camera=dict(projection=dict(type='orthographic')),
 			),
-			margin=dict(l=0, r=0, b=0, t=40),
+			margin=dict(l=50, r=50, b=50, t=50),
 		)
 		return fig
 
@@ -1462,6 +1593,7 @@ def main_post() -> None:
 	extract_phase_boundary = _parse_bool_env("GP_EXTRACT_PHASE_BOUNDARY", True)
 	save_phase_boundary = _parse_bool_env("GP_SAVE_PHASE_BOUNDARY", True)
 	notify_tmax_unchanged = _parse_bool_env("GP_NOTIFY_TMAX_UNCHANGED", True)
+	notify_tmin_contains_liquid = _parse_bool_env("GP_NOTIFY_TMIN_CONTAINS_LIQUID", True)
 	tmax_change_atol = _parse_float_env("GP_TMAX_CHANGE_ATOL", 1e-9)
 	plotter_dir_override = os.getenv("GP_PLOTTER_DIR")
 	print_rows = _parse_int_env("GP_PRINT_ROWS", 20)
@@ -1476,6 +1608,7 @@ def main_post() -> None:
 	print(f"Extract phase-boundary simplices: {extract_phase_boundary}")
 	print(f"Save phase-boundary dataframe: {save_phase_boundary}")
 	print(f"Notify when Tmax unchanged after filter: {notify_tmax_unchanged}")
+	print(f"Notify when Tmin contains liquid: {notify_tmin_contains_liquid}")
 	print(f"Tmax change tolerance: {tmax_change_atol}")
 	print(f"Plotter dir override: {plotter_dir_override}")
 	print(f"Rows to print from reconstructed equilibrium_df: {print_rows}")
@@ -1538,7 +1671,7 @@ def main_post() -> None:
 				print(f"Saved phase-boundary equilibrium file: {out_path}")
 
 			tmax_diag = post.evaluate_tmax_filter_change(atol=tmax_change_atol)
-			print("\n[Tmax diagnostic]")
+			print("\n[Temperature-boundary diagnostic]")
 			print(
 				f"  full_tmax_k={tmax_diag['full_tmax_k']} | "
 				f"filtered_tmax_k={tmax_diag['filtered_tmax_k']} | "
@@ -1546,12 +1679,21 @@ def main_post() -> None:
 			)
 			print(f"  all_phases_at_full_tmax_are_liquid={tmax_diag['all_phases_at_full_tmax_are_liquid']}")
 			print(f"  phases_at_full_tmax={tmax_diag['phases_at_full_tmax']}")
+			print(f"  full_tmin_k={tmax_diag['full_tmin_k']}")
+			print(f"  liquid_present_at_full_tmin={tmax_diag['liquid_present_at_full_tmin']}")
+			print(f"  phases_at_full_tmin={tmax_diag['phases_at_full_tmin']}")
 
 			if notify_tmax_unchanged and (tmax_diag.get("tmax_changed_after_filter") is False):
 				print(
 					"[WARN] Boundary-filter Tmax did not decrease. "
 					"Highest-temperature rows still include non-single-phase boundary simplices; "
 					"consider sampling a higher Tmax range to ensure complete high-T closure."
+				)
+
+			if notify_tmin_contains_liquid and (tmax_diag.get("liquid_present_at_full_tmin") is True):
+				print(
+					"[WARN] Lowest-temperature slice still contains liquid phase rows. "
+					"Consider extending the temperature range lower to capture full low-T closure."
 				)
 
 		s = post.summary()
@@ -1577,6 +1719,7 @@ def main_viz() -> None:
 	save_html = _parse_bool_env("GP_VIZ_SAVE_HTML", True)
 	html_out_dir = Path(os.getenv("GP_VIZ_HTML_OUT_DIR", "all_dumps/quaternary_demo/plotter_dir"))
 	grid_delta = _parse_float_env("GP_VIZ_GRID_DELTA", 0.025)
+	slice_phase_extrema_filter = _parse_bool_env("GP_VIZ_SLICE_PHASE_EXTREMA_FILTER", True)
 
 	print("=" * 72)
 	print("GENERAL PLOTTER VIZ SMOKE TEST")
@@ -1590,6 +1733,7 @@ def main_viz() -> None:
 	print(f"Save HTML outputs: {save_html}")
 	print(f"HTML output dir: {html_out_dir}")
 	print(f"Slice grid delta: {grid_delta}")
+	print(f"Slice phase-extrema filter: {slice_phase_extrema_filter}")
 
 	phase_boundary_path = Path(phase_boundary_file)
 	if not phase_boundary_path.exists():
@@ -1646,6 +1790,7 @@ def main_viz() -> None:
 		comp_b=n_zr,
 		fixed_components={n_hf: 0.0, n_w: 0.0},
 		tolerance=max(0.5 * grid_delta, 1e-6),
+		phase_extrema_filter=slice_phase_extrema_filter,
 		title=f"{n_nb}-{n_zr} Binary Slice ({n_hf}=0, {n_w}=0)",
 	)
 
@@ -1655,6 +1800,7 @@ def main_viz() -> None:
 		comp_b=n_zr,
 		fixed_components={n_hf: nonzero_hf, n_w: nonzero_w},
 		tolerance=max(0.5 * grid_delta, 1e-6),
+		phase_extrema_filter=slice_phase_extrema_filter,
 		title=f"{n_nb}-{n_zr} Slice ({n_hf}={nonzero_hf:.3f}, {n_w}={nonzero_w:.3f})",
 	)
 
@@ -1665,6 +1811,7 @@ def main_viz() -> None:
 		comp_c=n_zr,
 		fixed_components={n_w: 0.0},
 		tolerance=max(0.5 * grid_delta, 1e-6),
+		phase_extrema_filter=slice_phase_extrema_filter,
 		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}=0)",
 		color_by="Phase",
 	)
@@ -1676,6 +1823,7 @@ def main_viz() -> None:
 		comp_c=n_zr,
 		fixed_components={n_w: nonzero_w_tern},
 		tolerance=max(0.5 * grid_delta, 1e-6),
+		phase_extrema_filter=slice_phase_extrema_filter,
 		title=f"{n_hf}-{n_nb}-{n_zr} Slice ({n_w}={nonzero_w_tern:.3f})",
 		color_by="Phase",
 	)
