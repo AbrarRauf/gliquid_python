@@ -6,6 +6,7 @@ import json
 import os
 import re
 import fnmatch
+import contextlib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,41 @@ SS_FIXED_COLORS = {
 	"FCC": "#1b9aaa",
 	"HCP": "#f4a259",
 }
+
+
+def _read_pickle_robust(path: str) -> pd.DataFrame:
+	try:
+		return pd.read_pickle(path, compression="gzip")
+	except NotImplementedError as exc:
+		if "NDArrayBacked" not in str(exc) and "array(" not in str(exc):
+			raise
+		warnings.warn(
+			f"Retrying legacy-compatible pickle load for {path}: {exc}",
+			RuntimeWarning,
+		)
+
+		@contextlib.contextmanager
+		def _legacy_stringarray_setstate_patch() -> Any:
+			from pandas.core.arrays.string_ import StringArray
+
+			orig_setstate = StringArray.__setstate__
+
+			def _patched_setstate(self, state):
+				if isinstance(state, tuple) and len(state) == 2:
+					dtype_obj, values = state
+					if isinstance(dtype_obj, str) and dtype_obj.lower() in {"str", "string"}:
+						dtype_obj = pd.StringDtype(storage="python")
+					state = (dtype_obj, values, {})
+				return orig_setstate(self, state)
+
+			StringArray.__setstate__ = _patched_setstate
+			try:
+				yield
+			finally:
+				StringArray.__setstate__ = orig_setstate
+
+		with _legacy_stringarray_setstate_patch():
+			return pd.read_pickle(path, compression="gzip")
 
 
 def _infer_comp_cols(df: pd.DataFrame) -> List[str]:
@@ -417,28 +453,32 @@ class GeneralHSXPostprocess:
 		source_offset = 0
 
 		for block_idx, block in enumerate(blocks):
-			eq_df = pd.read_pickle(block.equilibrium_path, compression="gzip")
-			sx_df = pd.read_pickle(block.simplex_path, compression="gzip")
-			gtx_df = pd.read_pickle(block.gtx_path, compression="gzip") if (self.load_gtx and block.gtx_path) else None
+			eq_df = _read_pickle_robust(block.equilibrium_path)
+			sx_df = _read_pickle_robust(block.simplex_path)
+			gtx_df = _read_pickle_robust(block.gtx_path) if (self.load_gtx and block.gtx_path) else None
 
-			if not self.composition_cols:
+			if (not self.composition_cols) and (not eq_df.empty):
 				self.composition_cols = _infer_comp_cols(eq_df)
 
-			if "simplex_id" not in eq_df.columns or "source_row_id" not in eq_df.columns:
+			if (not eq_df.empty) and ("simplex_id" not in eq_df.columns or "source_row_id" not in eq_df.columns):
 				raise ValueError(f"Equilibrium file missing linkage columns: {block.equilibrium_path}")
-			if "simplex_id" not in sx_df.columns or "vertex_source_row_ids" not in sx_df.columns:
+			if (not sx_df.empty) and ("simplex_id" not in sx_df.columns or "vertex_source_row_ids" not in sx_df.columns):
 				raise ValueError(f"Simplex file missing linkage columns: {block.simplex_path}")
 
 			eq_df = eq_df.copy()
 			sx_df = sx_df.copy()
 
-			eq_df["simplex_id"] = eq_df["simplex_id"].astype(np.int64) + int(simplex_offset)
-			sx_df["simplex_id"] = sx_df["simplex_id"].astype(np.int64) + int(simplex_offset)
+			if "simplex_id" in eq_df.columns:
+				eq_df["simplex_id"] = eq_df["simplex_id"].astype(np.int64) + int(simplex_offset)
+			if "simplex_id" in sx_df.columns:
+				sx_df["simplex_id"] = sx_df["simplex_id"].astype(np.int64) + int(simplex_offset)
 
-			eq_df["source_row_id"] = eq_df["source_row_id"].astype(np.int64) + int(source_offset)
-			sx_df["vertex_source_row_ids"] = sx_df["vertex_source_row_ids"].apply(
-				lambda vals: self._offset_vertex_source_ids(vals, source_offset)
-			)
+			if "source_row_id" in eq_df.columns:
+				eq_df["source_row_id"] = eq_df["source_row_id"].astype(np.int64) + int(source_offset)
+			if "vertex_source_row_ids" in sx_df.columns:
+				sx_df["vertex_source_row_ids"] = sx_df["vertex_source_row_ids"].apply(
+					lambda vals: self._offset_vertex_source_ids(vals, source_offset)
+				)
 
 			eq_df["block_index"] = int(block_idx)
 			sx_df["block_index"] = int(block_idx)
@@ -824,7 +864,8 @@ class PhaseBoundaryPlotter:
 	def _full_component_names(self) -> List[str]:
 		if self.element_names is not None:
 			return [str(v) for v in self.element_names]
-		return ["dep", "x0", "x1", "x2"]
+		# Generic fallback for arbitrary component count: dep + x0..x{n-2}
+		return ["dep"] + [f"x{i}" for i in range(self.n_total_components - 1)]
 
 	def _phase_color_map(self, phases: Sequence[str]) -> Dict[str, str]:
 		reserved = {"cornflowerblue"}
