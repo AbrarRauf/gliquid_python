@@ -121,8 +121,8 @@ def main() -> None:
 	)
 	output_root = Path(os.getenv("OUTPUT_ROOT", str(repo_root / "all_dumps" / "hpc_runs")))
 
-	grid_delta = _parse_float_env("GRID_DELTA", 0.025)
-	temp_delta_k = _parse_float_env("TEMP_DELTA_K", 25.0)
+	grid_delta = _parse_float_env("GRID_DELTA", 0.05)
+	temp_delta_k = _parse_float_env("TEMP_DELTA_K", 50.0)
 	include_ref_ss = _parse_bool_env("INCLUDE_REF_SS", True)
 	include_polymorphs = _parse_bool_env("INCLUDE_POLYMORPHS", False)
 	use_mp_cache = _parse_bool_env("USE_MP_CACHE", False)
