@@ -35,7 +35,10 @@ from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2_optimized
 import random
 from auth import mpapi_key
 
-mpr = MPRester(mpapi_key)  
+# Do NOT instantiate MPRester at module import time.
+# mp_api creates a heartbeat request on init, which breaks offline HPC runs
+# even when cached entries are present and no API fetch should occur.
+DEFAULT_MP_API_KEY = mpapi_key
 
 R = 8.314  # J/(mol*K)
 EV_PER_ATOM_TO_J_PER_MOL = 96485.33212
@@ -626,7 +629,7 @@ class GeneralInterpolation:
             if self._mp_api_key:
                 self._mpr = MPRester(self._mp_api_key)
             else:
-                self._mpr = mpr  # Use module-level default
+                self._mpr = MPRester(DEFAULT_MP_API_KEY)
         return self._mpr
     
     # =========================================================================
