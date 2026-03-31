@@ -512,7 +512,8 @@ class GeneralInterpolation:
         ref_solid_solutions_path: Optional[str] = None,
         ref_ss_interp_scheme: str = 'linear',
         tau: float = 8000,
-        mp_api_key: Optional[str] = None
+        mp_api_key: Optional[str] = None,
+        mp_cache_dir: Optional[str] = None,
     ):
         """
         Initialize the interpolation system.
@@ -536,6 +537,8 @@ class GeneralInterpolation:
                 interactions in reference solid-solution phases.
             tau: exp constant for combined format (default 8000).
             mp_api_key: Materials Project API key (uses default if None).
+            mp_cache_dir: Directory for Materials Project chemsys entry cache
+                files (<System>_entries.json). Defaults to <repo>/data/mp_cache.
         """
         # Sort elements alphabetically for consistency
         self.elements = sorted(elements)
@@ -561,6 +564,10 @@ class GeneralInterpolation:
         self.ref_solid_solutions_path = ref_solid_solutions_path
         self.ref_ss_interp_scheme = ref_ss_interp_scheme
         self.tau = tau
+        if mp_cache_dir is None:
+            self.mp_cache_dir = Path(__file__).resolve().parents[2] / 'data' / 'mp_cache'
+        else:
+            self.mp_cache_dir = Path(mp_cache_dir).resolve()
 
         if self.ref_ss_interp_scheme not in INTERPOLATION_SCHEMES:
             raise ValueError(
@@ -610,6 +617,7 @@ class GeneralInterpolation:
         print(f"  Binary pairs: {self.binary_pairs}")
         print(f"  Include polymorph references: {self.include_polymorphs}")
         print(f"  Include ref solid solutions: {self.include_ref_solid_solutions}")
+        print(f"  MP cache dir: {self.mp_cache_dir}")
     
     @property
     def mpr(self) -> MPRester:
@@ -1267,8 +1275,8 @@ class GeneralInterpolation:
         Returns:
             List of serialized ComputedStructureEntry dicts.
         """
-        # Ensure output directory exists
-        cache_dir = os.path.join(self.output_dir, 'mp_cache')
+        # Use shared MP cache directory (default: <repo>/data/mp_cache).
+        cache_dir = str(self.mp_cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
         
         system_name = '-'.join(self.elements)

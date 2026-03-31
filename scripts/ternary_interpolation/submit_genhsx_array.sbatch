@@ -48,7 +48,9 @@ BLOCK_LIST_FILE="${block_files[0]}"
 # SYSTEM_ELEMENTS will be read from the block-list header line.
 
 # Cluster defaults requested for these runs.
-export USE_MP_CACHE="false"
+export USE_MP_CACHE="true"
+export REQUIRE_MP_CACHE="true"
+export MP_CACHE_DIR="$REPO_ROOT/data/mp_cache"
 export VERTICAL_SIMPLICES="false"
 export INCLUDE_REF_SS="true"
 export INCLUDE_POLYMORPHS="false"
@@ -63,6 +65,7 @@ mkdir -p "$OUTPUT_ROOT"
 # export EQ_PROGRESS_EVERY="1"
 # export PARAM_XLSX_PATH="$REPO_ROOT/data/high_component/ssol_fits_linear_model_legacy_refs-tau_penalty.xlsx"
 # export REF_SS_OMEGAS_PATH="$REPO_ROOT/data/high_component/omegas.json"
+# export MP_CACHE_DIR="$REPO_ROOT/data/mp_cache"
 # export OUTPUT_ROOT="$REPO_ROOT/all_dumps/hpc_runs"
 
 if [[ ! -f "$BLOCK_LIST_FILE" ]]; then

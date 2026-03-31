@@ -126,6 +126,7 @@ def main() -> None:
 	include_ref_ss = _parse_bool_env("INCLUDE_REF_SS", True)
 	include_polymorphs = _parse_bool_env("INCLUDE_POLYMORPHS", False)
 	use_mp_cache = _parse_bool_env("USE_MP_CACHE", False)
+	require_mp_cache = _parse_bool_env("REQUIRE_MP_CACHE", True)
 	vertical_simplices = _parse_bool_env("VERTICAL_SIMPLICES", False)
 	eq_progress_every = _parse_int_env("EQ_PROGRESS_EVERY", 1)
 
@@ -158,6 +159,11 @@ def main() -> None:
 	run_dir = output_root / system_name / block_label
 	run_dir.mkdir(parents=True, exist_ok=True)
 
+	# Materials Project cache handling for offline HPC execution.
+	shared_mp_cache_dir = Path(os.getenv("MP_CACHE_DIR", str(repo_root / "data" / "mp_cache"))).resolve()
+	system_cache_name = f"{system_name}_entries.json"
+	shared_cache_path = shared_mp_cache_dir / system_cache_name
+
 	print("=" * 72)
 	print("GENERAL HSX HPC BLOCK RUNNER")
 	print("=" * 72)
@@ -169,9 +175,23 @@ def main() -> None:
 	print(f"Include ref solid solutions: {include_ref_ss}")
 	print(f"Include polymorphs: {include_polymorphs}")
 	print(f"Use MP cache: {use_mp_cache}")
+	print(f"Require MP cache: {require_mp_cache}")
+	print(f"Shared MP cache dir: {shared_mp_cache_dir}")
 	print(f"Vertical simplices: {vertical_simplices}")
 	print(f"Parameter file: {param_xlsx_path}")
 	print(f"Output run dir: {run_dir}")
+	print(f"Expected system MP cache file: {shared_cache_path}")
+
+	if require_mp_cache and not shared_cache_path.exists():
+		raise FileNotFoundError(
+			"REQUIRE_MP_CACHE=true but system MP cache file is missing. "
+			f"Expected: {shared_cache_path}. "
+			"Pre-generate this file locally with precache_mp_entries.py and transfer it to MP_CACHE_DIR."
+		)
+
+	if require_mp_cache and not use_mp_cache:
+		print("[WARN] REQUIRE_MP_CACHE=true overrides USE_MP_CACHE=false -> forcing USE_MP_CACHE=true")
+		use_mp_cache = True
 
 	if not param_xlsx_path.exists():
 		raise FileNotFoundError(f"Parameter file not found: {param_xlsx_path}")
@@ -189,6 +209,7 @@ def main() -> None:
 	interp = GeneralInterpolation(
 		elements=elements,
 		output_dir=str(run_dir),
+		mp_cache_dir=str(shared_mp_cache_dir),
 		grid_delta=grid_delta,
 		temp_delta_k=temp_delta_k,
 		temp_bounds_k=(tmin_k, tmax_k),
