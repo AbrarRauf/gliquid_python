@@ -627,6 +627,59 @@ def main_viz() -> None:
         fig.write_html(str(out), include_plotlyjs="cdn")
         quat_saved += 1
 
+    # ------------------ Quaternary liquidus + BCC sweeps (all 5 projections) ------
+    # For a 5-component HEA, there are 5 distinct quaternary projections (choose 4 of 5).
+    # We generate both liquidus (L, Tmin) and BCC (BCC*, Tmax) for each projection.
+    sweep_fixed_value = float(os.getenv("HEA_QUAT_SWEEP_FIXED_VALUE", "0.15"))
+    quat_liquid_saved = 0
+    quat_bcc_saved = 0
+    for i, selected4 in enumerate(combinations(full_names, 4), start=1):
+        omitted = [x for x in full_names if x not in set(selected4)]
+        if len(omitted) != 1:
+            continue
+        fixed_name = omitted[0]
+        fixed = _snap_fixed({fixed_name: sweep_fixed_value})
+
+        try:
+            df_slice = plotter.filter_by_fixed_components(fixed_components=fixed, tolerance=tol)
+            df_q = _reduce_to_quaternary_df(df_slice, selected_full_components=list(selected4))
+            if df_q.empty:
+                raise ValueError("Projected quaternary slice is empty")
+            qplotter = PhaseBoundaryPlotter(
+                equilibrium_df=df_q,
+                composition_cols=["x0", "x1", "x2"],
+                element_names=list(selected4),
+            )
+
+            fig_l = qplotter.plot_quaternary_phase_tetrahedral(
+                phase_filter="L",
+                temperature_extrema="min",
+                composition_tol=tol,
+                title=(
+                    f"Liquidus quaternary {tuple(selected4)} | "
+                    f"fixed {fixed_name}={fixed[fixed_name]:.2f}"
+                ),
+            )
+            out_l = html_out_dir / f"quaternary_liquidus_{i:02d}_{'_'.join(selected4)}.html"
+            fig_l.write_html(str(out_l), include_plotlyjs="cdn")
+            quat_liquid_saved += 1
+
+            fig_b = qplotter.plot_quaternary_phase_tetrahedral(
+                phase_filter="BCC*",
+                temperature_extrema="max",
+                composition_tol=tol,
+                title=(
+                    f"BCC Tmax quaternary {tuple(selected4)} | "
+                    f"fixed {fixed_name}={fixed[fixed_name]:.2f}"
+                ),
+            )
+            out_b = html_out_dir / f"quaternary_bcc_{i:02d}_{'_'.join(selected4)}.html"
+            fig_b.write_html(str(out_b), include_plotlyjs="cdn")
+            quat_bcc_saved += 1
+        except Exception as e:
+            print(f"[SKIP][quaternary liquidus/BCC {i}] {selected4}: {e}")
+            continue
+
     run_summary = {
         "system": system_name,
         "phase_boundary_file": str(phase_boundary_file),
@@ -638,6 +691,8 @@ def main_viz() -> None:
             "binary_html": int(bin_saved),
             "ternary_html": int(tern_saved),
             "quaternary_html": int(quat_saved),
+            "quaternary_liquidus_html": int(quat_liquid_saved),
+            "quaternary_bcc_html": int(quat_bcc_saved),
         },
     }
     summary_path = html_out_dir / "hea_viz_summary.json"
@@ -648,6 +703,8 @@ def main_viz() -> None:
     print(f"Saved binary HTML count: {bin_saved}")
     print(f"Saved ternary HTML count: {tern_saved}")
     print(f"Saved quaternary HTML count: {quat_saved}")
+    print(f"Saved quaternary liquidus HTML count: {quat_liquid_saved}")
+    print(f"Saved quaternary BCC HTML count: {quat_bcc_saved}")
 
 
 if __name__ == "__main__":
