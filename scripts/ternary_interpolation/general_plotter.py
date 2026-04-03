@@ -1051,6 +1051,7 @@ class PhaseBoundaryPlotter:
 			raise ValueError(
 				f"No rows found for fixed components {fixed_components} with tolerance {tol}."
 			)
+		out["is_interpolated"] = False
 		return self._attach_coexisting_phases(out)
 
 	def _interpolate_slice_for_plot(
@@ -1127,6 +1128,7 @@ class PhaseBoundaryPlotter:
 			return pd.DataFrame()
 
 		out = pd.DataFrame(rows)
+		out["is_interpolated"] = True
 		return self._attach_coexisting_phases(out)
 
 	def _phase_extrema_mode_for_slice(self, phase: Any) -> Optional[str]:
@@ -1182,6 +1184,7 @@ class PhaseBoundaryPlotter:
 		fixed_components: Dict[str, float],
 		tolerance: Optional[float] = None,
 		phase_extrema_filter: bool = False,
+		temp_axis_range_k: Optional[Tuple[float, float]] = None,
 		title: Optional[str] = None,
 	) -> go.Figure:
 		if comp_a in fixed_components or comp_b in fixed_components:
@@ -1225,6 +1228,8 @@ class PhaseBoundaryPlotter:
 		df[f"{comp_a}_abs_max"] = pair_total_nominal
 		df[f"{comp_b}_abs_min"] = 0.0
 		df[f"{comp_b}_abs_max"] = pair_total_nominal
+		if "is_interpolated" not in df.columns:
+			df["is_interpolated"] = False
 		color_map = self._phase_color_map(df["Phase"].astype(str).tolist())
 		fig = px.scatter(
 			df,
@@ -1243,6 +1248,7 @@ class PhaseBoundaryPlotter:
 					f"{comp_a}_abs_max": ":.4f",
 					f"{comp_b}_abs_min": ":.4f",
 					f"{comp_b}_abs_max": ":.4f",
+						"is_interpolated": True,
 					"coexisting_phases": True,
 			},
 		)
@@ -1252,7 +1258,7 @@ class PhaseBoundaryPlotter:
 			width=980,
 			height=700,
 			xaxis_title=f"x_{comp_a} / (x_{comp_a} + x_{comp_b})",
-			yaxis_title="T [K]",
+			yaxis=dict(title="T [K]", range=list(temp_axis_range_k) if temp_axis_range_k is not None else None),
 			plot_bgcolor="white",
 			legend=dict(x=0.95, y=0.95, xanchor="left", yanchor="top"),
 			margin=dict(l=60, r=60, b=60, t=60),
@@ -1285,6 +1291,7 @@ class PhaseBoundaryPlotter:
 		phase_extrema_filter: bool = False,
 		ternary_phase_mesh: bool = False,
 		slice_grid_delta: Optional[float] = None,
+		temp_axis_range_k: Optional[Tuple[float, float]] = None,
 		title: Optional[str] = None,
 		ss_cluster_factor: float = 1.75,
 		color_by: str = "Phase",
@@ -1331,6 +1338,8 @@ class PhaseBoundaryPlotter:
 		df["b_norm"] = df[comp_b].to_numpy(dtype=float) / s
 		df["c_norm"] = df[comp_c].to_numpy(dtype=float) / s
 		df["ternary_slice_total"] = s
+		if "is_interpolated" not in df.columns:
+			df["is_interpolated"] = False
 		tx, ty = self._cartesian_to_ternary_display(
 			df["a_norm"].to_numpy(dtype=float),
 			df["b_norm"].to_numpy(dtype=float),
@@ -1357,6 +1366,7 @@ class PhaseBoundaryPlotter:
 							g[comp_b].to_numpy(dtype=float),
 							g[comp_c].to_numpy(dtype=float),
 							g["ternary_slice_total"].to_numpy(dtype=float),
+							g["is_interpolated"].astype(str).to_numpy(),
 							g["coexisting_phases"].astype(str).to_numpy(),
 						]),
 						hovertemplate=(
@@ -1366,7 +1376,8 @@ class PhaseBoundaryPlotter:
 							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
 							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
 							"Slice_total=%{customdata[3]:.4f}<br>"
-							"Coexisting=%{customdata[4]}<extra></extra>"
+							"Interpolated=%{customdata[4]}<br>"
+							"Coexisting=%{customdata[5]}<extra></extra>"
 						),
 					)
 				)
@@ -1412,6 +1423,7 @@ class PhaseBoundaryPlotter:
 							g_u[comp_b].to_numpy(dtype=float),
 							g_u[comp_c].to_numpy(dtype=float),
 							g_u["ternary_slice_total"].to_numpy(dtype=float),
+							g_u["is_interpolated"].astype(str).to_numpy(),
 							g_u["coexisting_phases"].astype(str).to_numpy(),
 						]),
 						hovertemplate=(
@@ -1421,7 +1433,8 @@ class PhaseBoundaryPlotter:
 							f"{comp_b}=%{{customdata[1]:.4f}}<br>"
 							f"{comp_c}=%{{customdata[2]:.4f}}<br>"
 							"Slice_total=%{customdata[3]:.4f}<br>"
-							"Coexisting=%{customdata[4]}<extra></extra>"
+							"Interpolated=%{customdata[4]}<br>"
+							"Coexisting=%{customdata[5]}<extra></extra>"
 						),
 					)
 				)
@@ -1511,7 +1524,7 @@ class PhaseBoundaryPlotter:
 			scene=dict(
 				xaxis=dict(title="Ternary display x"),
 				yaxis=dict(title="Ternary display y"),
-				zaxis=dict(title="T [K]"),
+				zaxis=dict(title="T [K]", range=list(temp_axis_range_k) if temp_axis_range_k is not None else None),
 				bgcolor='white',
 				camera=dict(projection=dict(type='orthographic')),
 			),
@@ -1558,6 +1571,8 @@ class PhaseBoundaryPlotter:
 			df[temp_col_name] = df["T_K"].astype(float)
 
 		df = self._attach_coexisting_phases(df)
+		if "is_interpolated" not in df.columns:
+			df["is_interpolated"] = False
 		arr4 = df[self._full_comp_cols].to_numpy(dtype=float)
 		xyz = self._barycentric_to_tetrahedral(arr4)
 		temp_vals = df["T_K"].to_numpy(dtype=float)
@@ -1565,6 +1580,7 @@ class PhaseBoundaryPlotter:
 			df["Phase"].astype(str).to_numpy(),
 			temp_vals,
 			arr4,
+			df["is_interpolated"].astype(str).to_numpy(),
 			df["coexisting_phases"].astype(str).to_numpy(),
 		])
 
@@ -1591,7 +1607,8 @@ class PhaseBoundaryPlotter:
 					"x0=%{customdata[3]:.4f}<br>"
 					"x1=%{customdata[4]:.4f}<br>"
 					"x2=%{customdata[5]:.4f}<br>"
-					"Coexisting=%{customdata[6]}<extra></extra>"
+					"Interpolated=%{customdata[6]}<br>"
+					"Coexisting=%{customdata[7]}<extra></extra>"
 				),
 				name=f"{phase_filter} points",
 			)

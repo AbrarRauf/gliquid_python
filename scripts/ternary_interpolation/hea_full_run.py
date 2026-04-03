@@ -19,6 +19,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 
 from general_plotter import GeneralPostProcess, PhaseBoundaryPlotter
 
@@ -34,6 +35,22 @@ def _nearest_available(series: pd.Series, target: float) -> float:
         return float(target)
     idx = int(np.argmin(np.abs(vals - float(target))))
     return float(vals[idx])
+
+
+def _parse_temp_range_env(raw: str | None) -> Tuple[float, float] | None:
+    if raw is None:
+        return None
+    txt = raw.strip()
+    if not txt:
+        return None
+    parts = [p.strip() for p in txt.split(",")]
+    if len(parts) != 2:
+        raise ValueError(f"Invalid temperature range '{raw}'. Use 'min,max' in Kelvin.")
+    t0 = float(parts[0])
+    t1 = float(parts[1])
+    if t1 < t0:
+        t0, t1 = t1, t0
+    return (t0, t1)
 
 
 def _is_liquid_phase(phase: str) -> bool:
@@ -122,13 +139,17 @@ def _save_boundary_csv_snapshot(
 def _compute_hea_summary(
     equilibrium_df: pd.DataFrame,
     element_names: Sequence[str],
-    hea_min_fraction: float = 0.10,
+    hea_max_fraction: float = 0.80,
     grid_delta: float = 0.05,
 ) -> Dict[str, object]:
     eq = equilibrium_df.copy()
     if eq.empty:
         return {
-            "hea_filter": {"min_element_fraction": float(hea_min_fraction), "n_rows_in_scope": 0},
+            "hea_filter": {
+                "require_all_elements_present": True,
+                "max_element_fraction": float(hea_max_fraction),
+                "n_rows_in_scope": 0,
+            },
             "hea_eutectic": None,
             "phases_at_tmin_not_tmax": [],
             "high_t_liquid_coverage": {"complete": None, "message": "No data available"},
@@ -142,9 +163,18 @@ def _compute_hea_summary(
 
     comp_cols = _infer_comp_cols(eq)
     eq_full = _full_named_df(eq, comp_cols=comp_cols, element_names=element_names)
-    hea_mask = np.ones(len(eq_full), dtype=bool)
-    for el in element_names:
-        hea_mask &= eq_full[el].to_numpy(dtype=float) >= float(hea_min_fraction) - 1e-12
+
+    eps = 1e-12
+
+    def _all_elements_present_with_cap(frame: pd.DataFrame) -> pd.Series:
+        mask = np.ones(len(frame), dtype=bool)
+        for el in element_names:
+            vals = frame[el].to_numpy(dtype=float)
+            mask &= vals > eps
+            mask &= vals <= float(hea_max_fraction) + eps
+        return pd.Series(mask, index=frame.index)
+
+    hea_mask = _all_elements_present_with_cap(eq_full).to_numpy(dtype=bool)
     eq_hea = eq_full.loc[hea_mask].copy().reset_index(drop=True)
 
     # Build simplex -> phase-set map once (for coexistence reporting).
@@ -154,7 +184,7 @@ def _compute_hea_summary(
         .to_dict()
     ) if "simplex_id" in eq.columns else {}
 
-    # 1) HEA eutectic from liquid low-T per composition, then HEA composition filter.
+    # 1) HEA eutectic from liquid low-T per composition, then 5-element-presence + cap filter.
     hea_eutectic = None
     liquid = eq_full[eq_full["Phase"].astype(str).apply(_is_liquid_phase)].copy()
     liq_min_rows = pd.DataFrame()
@@ -165,9 +195,7 @@ def _compute_hea_summary(
         liq_min_rows = liquid.loc[idx_min].copy().reset_index(drop=True)
 
     if not liq_min_rows.empty:
-        hea_liq = liq_min_rows.copy()
-        for el in element_names:
-            hea_liq = hea_liq[hea_liq[el].to_numpy(dtype=float) >= float(hea_min_fraction) - 1e-12]
+        hea_liq = liq_min_rows.loc[_all_elements_present_with_cap(liq_min_rows)].copy()
         if not hea_liq.empty:
             rep = hea_liq.sort_values(by=["T_K", "G" if "G" in hea_liq.columns else "T_K"], ascending=[True, True]).iloc[0]
             sid = int(rep["simplex_id"]) if "simplex_id" in rep and pd.notna(rep["simplex_id"]) else None
@@ -231,6 +259,21 @@ def _compute_hea_summary(
         cand = eq_hea[eq_hea["Phase"].astype(str) == phase].copy()
         if cand.empty:
             continue
+        if "simplex_id" not in cand.columns:
+            # Cannot verify liquid coexistence without simplex ids.
+            continue
+        cand = cand[cand["simplex_id"].notna()].copy()
+        if cand.empty:
+            continue
+
+        # Enforce that reported solution boundary points coexist with liquid.
+        cand["_has_liquid_coexist"] = cand["simplex_id"].apply(
+            lambda sid: any(_is_liquid_phase(p) for p in simplex_phase_sets.get(int(sid), set()))
+        )
+        cand = cand[cand["_has_liquid_coexist"]].copy()
+        if cand.empty:
+            continue
+
         cand["_ckey"] = cand.apply(lambda r: _composition_key_grid(r, element_names, grid_delta), axis=1)
         idx_max = cand.groupby("_ckey")["T_K"].idxmax()
         rep = cand.loc[idx_max].sort_values(by=["T_K", "G" if "G" in cand.columns else "T_K"], ascending=[False, True]).iloc[0]
@@ -239,6 +282,7 @@ def _compute_hea_summary(
             "highest_melting_T_C": float(rep["T_K"] - 273.15),
             "composition": _composition_dict(rep, element_names=element_names, precision=4),
             "simplex_id": int(rep["simplex_id"]) if "simplex_id" in rep and pd.notna(rep["simplex_id"]) else None,
+            "coexists_with_liquid": True,
         }
 
     intermetallic_stats: Dict[str, Dict[str, object]] = {}
@@ -262,7 +306,8 @@ def _compute_hea_summary(
 
     return {
         "hea_filter": {
-            "min_element_fraction": float(hea_min_fraction),
+            "require_all_elements_present": True,
+            "max_element_fraction": float(hea_max_fraction),
             "n_rows_in_scope": int(len(eq_hea)),
         },
         "hea_eutectic": hea_eutectic,
@@ -326,19 +371,19 @@ def _reduce_to_quaternary_df(
 
 def main_post() -> None:
     system_name = "Al-Hf-Nb-W-Zr"
-    element_names = ["Al", "Hf", "Nb", "W", "Zr"]
+    element_names = system_name.split("-")
     system_cache_dir = Path(
         os.getenv(
             "HEA_SYSTEM_CACHE_DIR",
-            "all_dumps/quaternary_demo/lower_hull_cache/Al-Hf-Nb-W-Zr",
+            f"all_dumps/quaternary_demo/lower_hull_cache/{system_name}_0_25_grid"   
         )
     )
     plotter_dir = Path(os.getenv("HEA_PLOTTER_DIR", "all_dumps/quaternary_demo/plotter_dir"))
     dump_full_csv = os.getenv("HEA_DUMP_FULL_EQUILIBRIUM_CSV", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
     sample_max_rows = int(os.getenv("HEA_SAMPLE_MAX_ROWS", "10000"))
-    hea_min_fraction = float(os.getenv("HEA_MIN_ELEMENT_FRACTION", "0.15"))
-    use_existing_boundary = os.getenv("HEA_USE_EXISTING_BOUNDARY_FILE", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-    grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.05"))
+    hea_max_fraction = float(os.getenv("HEA_MAX_ELEMENT_FRACTION", "0.80"))
+    use_existing_boundary = os.getenv("HEA_USE_EXISTING_BOUNDARY_FILE", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+    grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.025"))
 
     print("=" * 80)
     print("HEA MAIN_POST")
@@ -347,7 +392,8 @@ def main_post() -> None:
     print(f"Plotter dir: {plotter_dir}")
     print(f"Dump full equilibrium CSV: {dump_full_csv}")
     print(f"Sample max rows (when not full): {sample_max_rows}")
-    print(f"HEA minimum element fraction: {hea_min_fraction}")
+    print("HEA composition scope: all 5 elements must be present (x_i > 0)")
+    print(f"HEA maximum element fraction: {hea_max_fraction}")
     print(f"Use existing boundary file: {use_existing_boundary}")
     print(f"Grid delta: {grid_delta}")
 
@@ -390,7 +436,7 @@ def main_post() -> None:
     complete_summary = _compute_hea_summary(
         equilibrium_df=phase_boundary_df,
         element_names=element_names,
-        hea_min_fraction=hea_min_fraction,
+        hea_max_fraction=hea_max_fraction,
         grid_delta=grid_delta,
     )
 
@@ -404,7 +450,7 @@ def main_post() -> None:
         "complete_summary": complete_summary,
     }
 
-    summary_path = plotter_dir / f"{system_name}_summary.json"
+    summary_path = plotter_dir / f"{system_name}0_25_summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, default=str)
 
@@ -423,11 +469,11 @@ def main_post() -> None:
 
 def main_viz() -> None:
     system_name = "Al-Hf-Nb-W-Zr"
-    element_names = ["Al", "Hf", "Nb", "W", "Zr"]
-    grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.05"))
+    element_names = system_name.split("-")
+    grid_delta = float(os.getenv("HEA_GRID_DELTA", "0.025"))
     tol = float(os.getenv("HEA_SLICE_TOL", str(max(0.5 * grid_delta, 1e-6))))
     use_phase_extrema = os.getenv("HEA_SLICE_PHASE_EXTREMA", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-    use_ternary_phase_mesh = os.getenv("HEA_TERNARY_PHASE_MESH", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+    use_ternary_phase_mesh = os.getenv("HEA_TERNARY_PHASE_MESH", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
     ss_cluster_factor = float(os.getenv("HEA_TERNARY_SS_CLUSTER_FACTOR", "1.75"))
     if not use_phase_extrema:
         use_ternary_phase_mesh = False
@@ -444,7 +490,7 @@ def main_viz() -> None:
             )
         phase_boundary_file = candidates[-1]
 
-    html_out_dir = plotter_dir / "hea_dump_main"
+    html_out_dir = plotter_dir / "hea_dump_fine"
     html_out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -471,6 +517,16 @@ def main_viz() -> None:
     if len(full_names) != 5:
         raise ValueError(f"Expected 5 total components for HEA run, got {len(full_names)}: {full_names}")
 
+    t_margin = float(os.getenv("HEA_GLOBAL_T_MARGIN_K", "500.0"))
+    t_full_min = float(full_df["T_K"].min())
+    t_full_max = float(full_df["T_K"].max())
+    t_default = (t_full_min - t_margin, t_full_max + t_margin)
+    binary_t_range = _parse_temp_range_env(os.getenv("HEA_BINARY_T_RANGE_K")) or t_default
+    ternary_t_range = _parse_temp_range_env(os.getenv("HEA_TERNARY_T_RANGE_K")) or t_default
+
+    print(f"Binary temperature axis range [K]: {binary_t_range}")
+    print(f"Ternary temperature axis range [K]: {ternary_t_range}")
+
     # -----------------------------------------------------------------------------
     # Hard-coded example slices (intentionally chosen as random-looking demos).
     # These are explicit so users can copy/modify them directly.
@@ -488,6 +544,53 @@ def main_viz() -> None:
         for name, val in fixed_components.items():
             snapped[name] = _nearest_available(full_df[name], float(val))
         return snapped
+
+    # ------------------ Equiatomic (0.2 each) interrogation ----------------------
+    eq_target = {name: 0.2 for name in full_names}
+    eq_fixed = _snap_fixed(eq_target)
+    eq_saved = 0
+    try:
+        eq_rows = plotter.filter_by_fixed_components(fixed_components=eq_fixed, tolerance=tol)
+
+        eq_liq = eq_rows[eq_rows["Phase"].astype(str).apply(_is_liquid_phase)].copy()
+        eq_bcc = eq_rows[eq_rows["Phase"].astype(str).str.upper().str.contains("BCC", na=False)].copy()
+
+        liquidus_t = float(eq_liq["T_K"].min()) if not eq_liq.empty else np.nan
+        bcc_t = float(eq_bcc["T_K"].max()) if not eq_bcc.empty else np.nan
+
+        print(
+            f"Equiatomic query (snapped): {eq_fixed} | "
+            f"Liquidus Tmin={liquidus_t if np.isfinite(liquidus_t) else 'NA'} K | "
+            f"BCC Tmax={bcc_t if np.isfinite(bcc_t) else 'NA'} K"
+        )
+
+        fig_eq = go.Figure(
+            data=[
+                go.Bar(
+                    x=["L liquidus Tmin", "BCC Tmax"],
+                    y=[liquidus_t, bcc_t],
+                    text=[
+                        f"{liquidus_t:.2f} K" if np.isfinite(liquidus_t) else "NA",
+                        f"{bcc_t:.2f} K" if np.isfinite(bcc_t) else "NA",
+                    ],
+                    textposition="outside",
+                    marker_color=["cornflowerblue", "#d7263d"],
+                )
+            ]
+        )
+        fig_eq.update_layout(
+            title=f"Equiatomic (x_i=0.2) temperatures | composition used: {eq_fixed}",
+            xaxis_title="Phase metric",
+            yaxis_title="Temperature [K]",
+            plot_bgcolor="white",
+            width=900,
+            height=650,
+        )
+        out_eq = html_out_dir / "equiatomic_liquidus_bcc_temperatures.html"
+        fig_eq.write_html(str(out_eq), include_plotlyjs="cdn")
+        eq_saved = 1
+    except Exception as e:
+        print(f"[SKIP][equiatomic interrogation]: {e}")
 
     # ------------------ Binary examples (3) --------------------------------------
     binary_examples = [
@@ -518,6 +621,7 @@ def main_viz() -> None:
                 fixed_components=fixed,
                 tolerance=tol,
                 phase_extrema_filter=use_phase_extrema,
+                temp_axis_range_k=binary_t_range,
                 title=f"RANDOM-EXAMPLE binary {ex['comp_a']}-{ex['comp_b']} | fixed {fixed}",
             )
         except Exception as e:
@@ -562,6 +666,7 @@ def main_viz() -> None:
                 phase_extrema_filter=use_phase_extrema,
                 ternary_phase_mesh=use_ternary_phase_mesh,
                 slice_grid_delta=grid_delta,
+                temp_axis_range_k=ternary_t_range,
                 ss_cluster_factor=ss_cluster_factor,
                 title=f"RANDOM-EXAMPLE ternary {ex['comp_a']}-{ex['comp_b']}-{ex['comp_c']} | fixed {fixed}",
                 color_by="Phase",
@@ -572,6 +677,38 @@ def main_viz() -> None:
         out = html_out_dir / f"ternary_example_{i:02d}_{ex['comp_a']}_{ex['comp_b']}_{ex['comp_c']}.html"
         fig.write_html(str(out), include_plotlyjs="cdn")
         tern_saved += 1
+
+    # ------------------ Requested ternary set with 0.2 constraints ---------------
+    ternary_fixed20_specs = [
+        ("Al", "W", "Zr"),
+        ("W", "Zr", "Nb"),
+        ("Hf", "Nb", "Al"),
+    ]
+    ternary_fixed20_saved = 0
+    for i, (a, b, c) in enumerate(ternary_fixed20_specs, start=1):
+        others = [x for x in full_names if x not in {a, b, c}]
+        fixed = _snap_fixed({name: 0.2 for name in others})
+        try:
+            fig = plotter.plot_ternary_slice(
+                comp_a=a,
+                comp_b=b,
+                comp_c=c,
+                fixed_components=fixed,
+                tolerance=tol,
+                phase_extrema_filter=use_phase_extrema,
+                ternary_phase_mesh=use_ternary_phase_mesh,
+                slice_grid_delta=grid_delta,
+                temp_axis_range_k=ternary_t_range,
+                ss_cluster_factor=ss_cluster_factor,
+                title=f"TERNARY fixed-0.2 {a}-{b}-{c} | fixed {fixed}",
+                color_by="Phase",
+            )
+        except Exception as e:
+            print(f"[SKIP][ternary fixed-0.2 {i}] {a}-{b}-{c}: {e}")
+            continue
+        out = html_out_dir / f"ternary_fixed20_{i:02d}_{a}_{b}_{c}.html"
+        fig.write_html(str(out), include_plotlyjs="cdn")
+        ternary_fixed20_saved += 1
 
     # ------------------ Quaternary examples (3) ----------------------------------
     quaternary_examples = [
@@ -680,6 +817,41 @@ def main_viz() -> None:
             print(f"[SKIP][quaternary liquidus/BCC {i}] {selected4}: {e}")
             continue
 
+    # ------------------ Requested BCC quaternary set (all 5, fixed 0.2) ----------
+    quat_bcc_fixed20_saved = 0
+    for i, selected4 in enumerate(combinations(full_names, 4), start=1):
+        omitted = [x for x in full_names if x not in set(selected4)]
+        if len(omitted) != 1:
+            continue
+        fixed_name = omitted[0]
+        fixed = _snap_fixed({fixed_name: 0.2})
+
+        try:
+            df_slice = plotter.filter_by_fixed_components(fixed_components=fixed, tolerance=tol)
+            df_q = _reduce_to_quaternary_df(df_slice, selected_full_components=list(selected4))
+            if df_q.empty:
+                raise ValueError("Projected quaternary slice is empty")
+            qplotter = PhaseBoundaryPlotter(
+                equilibrium_df=df_q,
+                composition_cols=["x0", "x1", "x2"],
+                element_names=list(selected4),
+            )
+            fig_bcc = qplotter.plot_quaternary_phase_tetrahedral(
+                phase_filter="BCC*",
+                temperature_extrema="max",
+                composition_tol=tol,
+                title=(
+                    f"BCC Tmax quaternary (fixed 0.2) {tuple(selected4)} | "
+                    f"fixed {fixed_name}={fixed[fixed_name]:.2f}"
+                ),
+            )
+            out_bcc = html_out_dir / f"quaternary_bcc_fixed20_{i:02d}_{'_'.join(selected4)}.html"
+            fig_bcc.write_html(str(out_bcc), include_plotlyjs="cdn")
+            quat_bcc_fixed20_saved += 1
+        except Exception as e:
+            print(f"[SKIP][quaternary bcc fixed-0.2 {i}] {selected4}: {e}")
+            continue
+
     run_summary = {
         "system": system_name,
         "phase_boundary_file": str(phase_boundary_file),
@@ -690,10 +862,15 @@ def main_viz() -> None:
         "saved_counts": {
             "binary_html": int(bin_saved),
             "ternary_html": int(tern_saved),
+            "ternary_fixed20_html": int(ternary_fixed20_saved),
             "quaternary_html": int(quat_saved),
             "quaternary_liquidus_html": int(quat_liquid_saved),
             "quaternary_bcc_html": int(quat_bcc_saved),
+            "quaternary_bcc_fixed20_html": int(quat_bcc_fixed20_saved),
+            "equiatomic_temperature_plot_html": int(eq_saved),
         },
+        "binary_temperature_axis_range_k": [float(binary_t_range[0]), float(binary_t_range[1])],
+        "ternary_temperature_axis_range_k": [float(ternary_t_range[0]), float(ternary_t_range[1])],
     }
     summary_path = html_out_dir / "hea_viz_summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -702,14 +879,17 @@ def main_viz() -> None:
     print(f"Saved HEA viz summary: {summary_path}")
     print(f"Saved binary HTML count: {bin_saved}")
     print(f"Saved ternary HTML count: {tern_saved}")
+    print(f"Saved ternary fixed-0.2 HTML count: {ternary_fixed20_saved}")
     print(f"Saved quaternary HTML count: {quat_saved}")
     print(f"Saved quaternary liquidus HTML count: {quat_liquid_saved}")
     print(f"Saved quaternary BCC HTML count: {quat_bcc_saved}")
+    print(f"Saved quaternary BCC fixed-0.2 HTML count: {quat_bcc_fixed20_saved}")
+    print(f"Saved equiatomic temperature plot HTML count: {eq_saved}")
 
 
 if __name__ == "__main__":
     # mode = os.getenv("HEA_MAIN", "post").strip().lower()
-    mode = os.getenv("HEA_MAIN", "viz").strip().lower()
+    mode = os.getenv("HEA_MAIN", "post").strip().lower()
     if mode == "post":
         main_post()
     elif mode == "viz":

@@ -5,7 +5,7 @@ import os
 import json
 import pandas as pd
 
-dump_dir = "all_dumps/zrte_spec/"
+dump_dir = "all_dumps/test_explore/"
 read_dir = "all_dumps/binary_fits/"
 
 if not os.path.exists(dump_dir):
@@ -28,7 +28,7 @@ def plot_ternary_system():
     # tern_param_format = 'linear'
     spec_inter = "CeFeSi"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
 
