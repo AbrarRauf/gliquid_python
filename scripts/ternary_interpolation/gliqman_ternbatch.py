@@ -39,16 +39,18 @@ def main():
     # print(spec_err_systems)
     # print(len(spec_err_systems))
 
-    only_include = ['Li', 'Be', 'B', 'C', 'Na', 'Mg', 'Al', 'Si', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni',
-                    'Cu', 'Zn', 'Ga', 'Ge', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
-                    'In', 'Sn', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er',
-                    'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Au', 'Hg', 'Tl', 'Pb', 'Th']
+    only_include = ['Ag', 'Al', 'Au', 'B', 'Ba', 'Be', 'Bi', 'C', 'Ca', 'Cd', 'Ce', 'Co', 'Cr', 'Cu', 'Dy', 'Er', 'Eu', 
+                    'Fe', 'Ga', 'Gd', 'Ge', 'Hf', 'Hg', 'Ho', 'In', 'Ir', 'La', 'Li', 'Lu', 'Mg', 'Mn', 'Mo', 'Na', 'Nb', 
+                    'Nd', 'Ni', 'Os', 'Pb', 'Pr', 'Rb', 'Re', 'Rh', 'Ru', 'Sc', 'Si', 'Sm', 'Sn', 'Sr', 'Ta', 'Tb', 'Th', 
+                    'Ti', 'Tl', 'Tm', 'V', 'W', 'Y', 'Yb', 'Zn', 'Zr']
+    print(len(only_include))
 
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
     interp = "linear"
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered.xlsx")

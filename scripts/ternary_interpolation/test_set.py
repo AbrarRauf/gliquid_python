@@ -14,11 +14,35 @@ dump_dir = "all_dumps/gliq_manu_test7_linear/"
 inter_doc = dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx"
 meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
 
+binary_param_df = pd.read_excel(
+    "data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx",
+    usecols=[0]
+)
+
+fit_binary_systems = {
+    '-'.join(sorted(str(sys).strip().split('-')))
+    for sys in binary_param_df.iloc[:, 0].dropna().tolist()
+    if '-' in str(sys)
+}
+
+
+def has_all_three_binaries(elements):
+    sorted_elems = sorted(elements)
+    binary_pairs = [
+        f"{sorted_elems[0]}-{sorted_elems[1]}",
+        f"{sorted_elems[1]}-{sorted_elems[2]}",
+        f"{sorted_elems[2]}-{sorted_elems[0]}",
+    ]
+    return all('-'.join(sorted(pair.split('-'))) in fit_binary_systems for pair in binary_pairs)
+
 # Read the inter_df
 inter_df = pd.read_excel(inter_doc)
 
 # Ensure elements column is parsed as lists
 inter_df['elements'] = inter_df['elements'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
+
+# Keep only ternaries where all three binaries are represented in fitting data
+inter_df = inter_df[inter_df['elements'].apply(has_all_three_binaries)].copy()
 
 # Create system keys from sorted elements
 inter_df['system_key'] = inter_df['elements'].apply(lambda x: '-'.join(sorted(x)))
