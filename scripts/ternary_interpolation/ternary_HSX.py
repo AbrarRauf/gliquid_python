@@ -527,7 +527,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             if T < self.conds[0]:
                 continue  
             points = np.array(self.df_Tgroups[T][['x0', 'x1', 'G']])
-            simplices = gliq_lowerhull3(points, vertical_simplices=True)
+            simplices = gliq_lowerhull3(points, vertical_simplices=False)
             simplex_vertices = []
             for simplex in simplices:
                 simplex_vertices.append(points[simplex])
@@ -577,6 +577,149 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         end_time = time.time()
         print(f"Lower hull evaluation and post processing time:: {end_time - start_time} seconds for temperature increment of {self.T_incr}")
+
+    def extract_single_hull_at_T(self, T_celsius: float):
+        """
+        Extract a single G-x0-x1 lower convex hull slice for diagnostics.
+
+        Args:
+            T_celsius: Temperature in Celsius. The nearest available temperature
+                slice in self.T_grid is used (no interpolation).
+
+        Returns:
+            dict containing diagnostic data and a Plotly figure.
+
+        Raises:
+            ValueError: If no temperature grid is available, or if no hull
+                simplices are found for the selected slice.
+        """
+        if not hasattr(self, 'df_Tgroups') or not hasattr(self, 'T_grid'):
+            self.init_sys()
+
+        T_kelvin_request = float(T_celsius) + 273.15
+        if len(self.T_grid) == 0:
+            raise ValueError("Temperature grid is empty. Run initialization before extracting a hull slice.")
+
+        nearest_index = int(np.argmin(np.abs(self.T_grid - T_kelvin_request)))
+        T_kelvin = float(self.T_grid[nearest_index])
+        T_celsius_exact = T_kelvin - 273.15
+
+        slice_df = self.df_Tgroups[T_kelvin].copy().reset_index(drop=True)
+        points = np.array(slice_df[['x0', 'x1', 'G']])
+        simplices = gliq_lowerhull3(points, vertical_simplices=False)
+
+        if simplices.size == 0:
+            raise ValueError(f"No lower-hull simplices found at T={T_celsius_exact:.6g} C.")
+
+        simplex_rows = []
+        for simplex_id, simplex in enumerate(simplices):
+            for vertex in simplex:
+                label = slice_df.loc[vertex, 'Phase']
+                simplex_rows.append([
+                    points[vertex][0],
+                    points[vertex][1],
+                    points[vertex][2],
+                    label,
+                    self.color_map[label],
+                    simplex_id,
+                ])
+
+        simplex_df = pd.DataFrame(
+            simplex_rows,
+            columns=['x0', 'x1', 'G', 'Phase', 'Colors', 'simplex_id']
+        )
+        simplex_df['x0_orig'] = simplex_df['x0'].copy()
+        simplex_df['x1_orig'] = simplex_df['x1'].copy()
+        simplex_df = cartesian_to_ternary(simplex_df)
+
+        transformed_points_df = slice_df[['x0', 'x1']].copy()
+        transformed_points_df['x0_orig'] = transformed_points_df['x0'].copy()
+        transformed_points_df['x1_orig'] = transformed_points_df['x1'].copy()
+        transformed_points_df = cartesian_to_ternary(transformed_points_df)
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Mesh3d(
+            x=transformed_points_df['x0'],
+            y=transformed_points_df['x1'],
+            z=points[:, 2],
+            i=simplices[:, 0],
+            j=simplices[:, 1],
+            k=simplices[:, 2],
+            opacity=0.55,
+            colorscale='Viridis',
+            intensity=points[:, 2],
+            showscale=True,
+            colorbar=dict(title='G'),
+            customdata=np.column_stack((slice_df['x0'], slice_df['x1'], slice_df['Phase'])),
+            hovertemplate=(
+                f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                'Phase: %{customdata[2]}<br>' +
+                'G: %{z:.4f}<extra></extra>'
+            )
+        ))
+
+        for phase, group in slice_df.groupby('Phase'):
+            phase_points = transformed_points_df.loc[group.index]
+            fig.add_trace(go.Scatter3d(
+                x=phase_points['x0'],
+                y=phase_points['x1'],
+                z=points[group.index, 2],
+                mode='markers',
+                marker=dict(
+                    size=4,
+                    color=group['Colors'].iloc[0],
+                    opacity=0.95,
+                    line=dict(color='black', width=0.4)
+                ),
+                name=phase,
+                customdata=np.column_stack((group['x0'], group['x1'], group['G'])),
+                hovertemplate=(
+                    f'<b>{phase}</b><br>' +
+                    f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                    f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                    'G: %{customdata[2]:.4f}<extra></extra>'
+                )
+            ))
+
+        g_floor = float(np.min(points[:, 2]))
+        fig.add_trace(go.Scatter3d(
+            x=[0, 0.5, 1, 0],
+            y=[0, np.sqrt(3)/2, 0, 0],
+            z=[g_floor, g_floor, g_floor, g_floor],
+            mode='lines',
+            line=dict(color='black', width=5),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+        fig.update_layout(
+            title=f"Single-slice lower hull at T = {T_celsius_exact:.2f} C",
+            scene=dict(
+                xaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False),
+                yaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False),
+                zaxis=dict(title='G'),
+                bgcolor='white',
+                camera=dict(projection=dict(type='orthographic')),
+            ),
+            margin=dict(l=40, r=40, b=40, t=60),
+            legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top')
+        )
+
+        return {
+            'requested_temperature_c': float(T_celsius),
+            'requested_temperature_k': T_kelvin_request,
+            'temperature_c': T_celsius_exact,
+            'temperature_k': T_kelvin,
+            'temperature_offset_c': T_celsius_exact - float(T_celsius),
+            'raw_slice_df': slice_df,
+            'hull_points': points,
+            'hull_simplices': simplices,
+            'transformed_points_df': transformed_points_df,
+            'simplex_df': simplex_df,
+            'figure': fig,
+        }
 
     def _add_isothermal_lines(self, fig, liq_points, triangles):
         """

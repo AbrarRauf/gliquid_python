@@ -8,6 +8,14 @@ import pandas as pd
 dump_dir = "all_dumps/test_explore/"
 read_dir = "all_dumps/binary_fits/"
 
+# Diagnostic settings (edit these directly in the script)
+# Set to a Celsius value (for example, 650.0) to generate a single-slice hull.
+# Set to None to skip the diagnostic slice extraction.
+DIAG_TEMP_C = 2176.8
+
+# If True, only the diagnostic single-slice plot is generated.
+DIAG_ONLY = False
+
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
 
@@ -20,7 +28,7 @@ def plot_ternary_system():
     # tern_sys = ["Tm", "Cu", "Ge"]
     # tern_sys = ["Fe", "Ce", "Si"]
     # tern_sys = ["Bi", "Cd", "Sn"]
-    tern_sys = ["Zr", "Bi", "Te"]
+    tern_sys = ["Er", "Mn", "Ge"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
@@ -28,7 +36,9 @@ def plot_ternary_system():
     # tern_param_format = 'linear'
     spec_inter = "CeFeSi"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/combexp_le_s10e-5_w5e-3_p8.5-filtered-ml.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
 
@@ -92,7 +102,7 @@ def plot_ternary_system():
     # print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     # print(plotter.hsx_df)
 
@@ -102,6 +112,29 @@ def plot_ternary_system():
     # print(plotter.hsx_df)
 
     plotter.process_data()
+
+    diag_temp_c = DIAG_TEMP_C
+    diag_only = DIAG_ONLY
+
+    # Single-slice diagnostic extraction at user-specified temperature (C)
+    if diag_temp_c is not None:
+        try:
+            diag_result = plotter.extract_single_hull_at_T(diag_temp_c)
+            diag_fig = diag_result['figure']
+            temp_tag = f"{diag_result['temperature_c']:.2f}".replace('-', 'm').replace('.', 'p')
+            diag_filename = dump_dir + f'{"-".join(sorted_sys)}_diag_{temp_tag}C.html'
+            ploff.plot(diag_fig, filename=diag_filename, auto_open=True)
+            print(f"Saved diagnostic single-slice hull to: {diag_filename}")
+        except ValueError as exc:
+            print(f"Diagnostic slice error: {exc}")
+            c_grid = plotter.T_grid - 273.15
+            print(
+                f"Available exact grid temperatures in C are from {c_grid.min():.2f} to {c_grid.max():.2f} "
+                f"with nominal increment {plotter.T_incr:.2f}."
+            )
+
+    if diag_only:
+        return
 
     tern_fig = plotter.plot_ternary()
 
