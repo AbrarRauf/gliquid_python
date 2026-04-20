@@ -37,8 +37,8 @@ def plot_ternary_system():
     spec_inter = "CeFeSi"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     # binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/combexp_le_s10e-5_w5e-3_p8.5-filtered-ml.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/combexp_le_s10e-5_w5e-3_p8.5-filtered-ml.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
 

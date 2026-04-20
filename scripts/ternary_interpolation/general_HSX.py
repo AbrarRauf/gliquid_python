@@ -1723,6 +1723,7 @@ class GeneralEquilibrium:
         print_progress: bool = True,
         progress_every: int = 1,
         drop_single_phase_simplices: bool = True,
+        keep_single_phase_liquid_simplices: bool = False,
     ) -> pd.DataFrame:
         """Solve lower-hull equilibrium for each temperature slice.
 
@@ -1733,6 +1734,9 @@ class GeneralEquilibrium:
             drop_single_phase_simplices: If True, discard simplices whose
                 vertices all belong to the same phase before storing results.
                 This reduces in-memory equilibrium/simplex row accumulation.
+            keep_single_phase_liquid_simplices: If True, retain single-phase
+                simplices when all simplex vertices are liquid labels. This is
+                only applied when drop_single_phase_simplices is True.
         """
         work = self.gtx_data.reset_index(drop=True).copy()
         work['source_row_id'] = np.arange(len(work), dtype=int)
@@ -1797,9 +1801,11 @@ class GeneralEquilibrium:
                 phase_names = simplex_vertices[self.phase_col].astype(str).tolist()
 
                 if drop_single_phase_simplices and len(set(phase_names)) <= 1:
-                    dropped_single_phase_simplices += 1
-                    dropped_single_phase_vertices += int(len(local_idx))
-                    continue
+                    all_liquid_simplex = all(self._is_liquid_label(p) for p in phase_names)
+                    if not (keep_single_phase_liquid_simplices and all_liquid_simplex):
+                        dropped_single_phase_simplices += 1
+                        dropped_single_phase_vertices += int(len(local_idx))
+                        continue
 
                 simplex_id = simplex_counter
                 simplex_counter += 1
@@ -1854,6 +1860,7 @@ class GeneralEquilibrium:
         # Lightweight diagnostics for downstream scripts/harnesses.
         self._solve_prune_stats = {
             'drop_single_phase_simplices': bool(drop_single_phase_simplices),
+            'keep_single_phase_liquid_simplices': bool(keep_single_phase_liquid_simplices),
             'dropped_single_phase_simplices': int(dropped_single_phase_simplices),
             'dropped_single_phase_vertices': int(dropped_single_phase_vertices),
             'n_retained_equilibrium_rows': int(len(self.equilibrium_df)),
@@ -1991,6 +1998,8 @@ class GeneralEquilibrium:
         cache_dir: str,
         cache_name: str = 'lower_hull',
         vertical_simplices: bool = True,
+        drop_single_phase_simplices: bool = True,
+        keep_single_phase_liquid_simplices: bool = False,
         force_recompute: bool = False,
         include_gtx_in_cache: bool = True,
         use_existing_cache: bool = False,
@@ -2013,7 +2022,11 @@ class GeneralEquilibrium:
             )
             return self.equilibrium_df
 
-        self.solve(vertical_simplices=vertical_simplices)
+        self.solve(
+            vertical_simplices=vertical_simplices,
+            drop_single_phase_simplices=drop_single_phase_simplices,
+            keep_single_phase_liquid_simplices=keep_single_phase_liquid_simplices,
+        )
         self.save_lower_hull_cache(
             cache_dir=cache_dir,
             cache_name=cache_name,
@@ -2280,16 +2293,16 @@ if __name__ == "__main__":
     # Intentionally unsorted input to verify canonical remapping behavior with reference phases that have polymorphs (e.g. elemental refs for Zr and Y).
     # input_elements = ["Zr", "Al", "Y", "Fe"]
     # input_elements = ["Bi", "Cd", "Sn", "Ag"]
-    # input_elements = ["Bi", "Cd", "Sn"]
+    input_elements = ["Er", "Mn", "Ge"]
     # input_elements = ["Al", "Cu", "Si", "Mg"]
     # input_elements = ["Pb", "Sn", "Cd", "Zn"]
     # input_elements = ["Pb", "Sn", "Cd", "Bi"]
     # input_elements = ["Ag", "Sn", "Bi", "Zn"]
     
-    input_elements = ["Zr", "Hf", "Nb", "W"] # SS only
+    # input_elements = ["Zr", "Hf", "Nb", "W"] # SS only
 
     include_polymorphs = False # Toggle False for MP-only reference mode.
-    include_solid_solutions = True # Toggle True to enable reference solid-solution cloud generation (BCC/FCC/HCP).
+    include_solid_solutions = False # Toggle True to enable reference solid-solution cloud generation (BCC/FCC/HCP).
     use_all_temps_for_equilibrium_validation = True# True -> all T slices; False -> low/mid/high only.
     canonical_elements = sorted(input_elements)
     binary_pairs = [
@@ -2304,7 +2317,8 @@ if __name__ == "__main__":
     print(f"Equilibrium validation uses all temperatures: {use_all_temps_for_equilibrium_validation}")
 
     # param_file = "data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx" # for general runs
-    param_file = "data/high_component/ssol_fits_linear_model_legacy_refs-tau_penalty.xlsx" # for solid-solution reference mode
+    # param_file = "data/high_component/ssol_fits_linear_model_legacy_refs-tau_penalty.xlsx" # for solid-solution reference mode
+    param_file = "data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx" # for solid-solution reference mode
     print(f"Loading binary parameters from: {param_file}")
     binary_param_df = pd.read_excel(param_file)
     print(binary_param_df)
@@ -2314,7 +2328,7 @@ if __name__ == "__main__":
         for pair in binary_pairs
     }
 
-    output_dir = "all_dumps/quaternary_demo/"
+    output_dir = "all_dumps/ternary_test/"
     os.makedirs(output_dir, exist_ok=True)
 
     # -----------------------------------------------------------------------
