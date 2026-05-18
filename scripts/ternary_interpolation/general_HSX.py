@@ -3,15 +3,12 @@ Author: Abrar Rauf, Joshua Wilwerth
 This module contains the classes for general interpolation and general phase diagram plotting.
 '''
 import os
-import time
 import sys
 import json
 import numpy as np
 np.set_printoptions(legacy='1.25')
 import pandas as pd
 import sympy as sp
-import plotly.express as px
-import plotly.graph_objects as go
 
 from typing import List
 from emmet.core.utils import jsanitize
@@ -20,19 +17,14 @@ from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from scipy.spatial import Delaunay, QhullError, cKDTree
-from copy import deepcopy
 from pathlib import Path
 
 WORKSPACE_ROOT = Path("C:\\Users\\AbrarRauf\\University of Michigan Dropbox\\Abrar Rauf\\WHSun_Lab\\G_liquid")
 
 from gliquid.config import phase_transitions_file
-from gliquid.binary import (
-    BinaryLiquid,
-    linear_expr, exponential_expr, combined_expr)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
-from extensive_hull_main import gliq_lowerhull3, gen_hyperplane_eqns2_optimized
-import random
+from extensive_hull_main import gliq_lowerhull3
 from auth import mpapi_key
 
 # Do NOT instantiate MPRester at module import time.

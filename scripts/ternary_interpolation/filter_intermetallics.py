@@ -62,8 +62,19 @@ grouped = ternary_df.groupby('reduced_formula')['melting_point_k']
 avg_temps = grouped.apply(remove_outliers_iqr).reset_index()
 avg_temps.columns = ['reduced_formula', 'avg_melting_point_k']
 
+# Rebuild ternary element lists for each reduced formula so downstream files
+# keep the same schema expected by batch scripts.
+def reduced_formula_to_elements(reduced_formula):
+    comp = Composition(reduced_formula)
+    return sorted([el.symbol for el in comp.elements])
+
+avg_temps['elements'] = avg_temps['reduced_formula'].apply(reduced_formula_to_elements)
+
 # Round to 3 decimal places
 avg_temps['avg_melting_point_k'] = avg_temps['avg_melting_point_k'].round(3)
+
+# Keep output column order compatible with prior filtered files.
+avg_temps = avg_temps[['reduced_formula', 'elements', 'avg_melting_point_k']]
 
 print(f"\nFiltered results: {len(avg_temps)} unique reduced formulas")
 print(avg_temps.head(10))
