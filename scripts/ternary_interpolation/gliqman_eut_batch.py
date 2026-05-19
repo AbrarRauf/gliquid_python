@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import ast
 
-dump_dir = "all_dumps/gliq_manu_test_eut_ultimate/"
+dump_dir = "all_dumps/gliq_manu_test_eut_forreal/"
 read_dir = "all_dumps/binary_fits/"
 
 if not os.path.exists(dump_dir):
@@ -31,8 +31,8 @@ def main():
     interp = "linear"
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    # binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
     ternary_sys_list = [
         ['Bi', 'Ga', 'Sn'],
@@ -75,12 +75,12 @@ def main():
             elif flipped_sys in binary_param_df['system'].tolist():
                 params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
                 fitorpred[bin_sys] = "fit"
-            elif bin_sys in binary_param_pred_df['system'].tolist():
-                params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-                fitorpred[bin_sys] = "pred"
-            elif flipped_sys in binary_param_pred_df['system'].tolist():
-                params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-                fitorpred[bin_sys] = "pred"
+            # elif bin_sys in binary_param_pred_df['system'].tolist():
+            #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+            #     fitorpred[bin_sys] = "pred"
+            # elif flipped_sys in binary_param_pred_df['system'].tolist():
+            #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+            #     fitorpred[bin_sys] = "pred"
             else:
                 raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
