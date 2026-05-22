@@ -8,7 +8,7 @@ import numpy as np
 import ast
 from collections import Counter
 
-dump_dir = "all_dumps/gliq_manu_forreal/"
+dump_dir = "all_dumps/gliq_manu_forreal_kohler/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -48,7 +48,7 @@ def main():
 
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
-    interp = "linear"
+    interp = "kohler"
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")

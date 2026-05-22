@@ -57,7 +57,10 @@ def build_ternary_thermodynamic_expressions(
     l1_bc_expr: sp.Expr = _L_LINEAR_EXPR,
     l0_ca_expr: sp.Expr = _L_LINEAR_EXPR,
     l1_ca_expr: sp.Expr = _L_LINEAR_EXPR,
-    l0_abc_expr: sp.Expr = 0
+    l0_abc_expr: sp.Expr = 0,
+    ab_diff_expr: sp.Expr = None,
+    bc_diff_expr: sp.Expr = None,
+    ca_diff_expr: sp.Expr = None,
 ) -> dict[str, sp.Expr]:
     """
     Builds a dictionary of thermodynamic Sympy expressions for a ternary system.
@@ -92,10 +95,17 @@ def build_ternary_thermodynamic_expressions(
         (R * t * (x_a * sp.log(x_a) + x_b * sp.log(x_b) + x_c * sp.log(x_c)), True),  # All present
     )
 
+    if ab_diff_expr is None:
+        ab_diff_expr = x_a - x_b
+    if bc_diff_expr is None:
+        bc_diff_expr = x_b - x_c
+    if ca_diff_expr is None:
+        ca_diff_expr = x_c - x_a
+
     # Excess Gibbs energy (Redlich-Kister for each binary, plus optional ternary term)
-    g_xs_ab = x_a * x_b * w12 * (l0_ab_expr + l1_ab_expr * (x_a - x_b))
-    g_xs_bc = x_b * x_c * w23 * (l0_bc_expr + l1_bc_expr * (x_b - x_c))
-    g_xs_ca = x_c * x_a * w31 * (l0_ca_expr + l1_ca_expr * (x_c - x_a))
+    g_xs_ab = x_a * x_b * w12 * (l0_ab_expr + l1_ab_expr * ab_diff_expr)
+    g_xs_bc = x_b * x_c * w23 * (l0_bc_expr + l1_bc_expr * bc_diff_expr)
+    g_xs_ca = x_c * x_a * w31 * (l0_ca_expr + l1_ca_expr * ca_diff_expr)
     g_xs_tern = l0_abc_expr * x_a * x_b * x_c
 
     g_xs = g_xs_ab + g_xs_bc + g_xs_ca + g_xs_tern
@@ -286,10 +296,51 @@ class ternary_interpolation:
         if not all(sys in self.L_dict.keys() for sys in self.binary_sys): # only do this if L_dict is not already populated
             raise ValueError("L_dict does not contain parameters for all binary systems.")
 
-        if self.interp_type == 'linear':
+        interp_scheme = str(self.interp_type).lower()
+        xA_expr = 1 - x1_sym - x2_sym
+        xB_expr = x1_sym
+        xC_expr = x2_sym
+
+        if interp_scheme == 'linear':
             wAB, wBC, wCA = 1, 1, 1
+            ab_diff_expr = xA_expr - xB_expr
+            bc_diff_expr = xB_expr - xC_expr
+            ca_diff_expr = xC_expr - xA_expr
+        elif interp_scheme == 'muggianu':
+            # Muggianu: symmetric projection onto each binary edge.
+            xA_eff_AB = xA_expr + xC_expr / 2
+            xB_eff_AB = xB_expr + xC_expr / 2
+            xB_eff_BC = xB_expr + xA_expr / 2
+            xC_eff_BC = xC_expr + xA_expr / 2
+            xC_eff_CA = xC_expr + xB_expr / 2
+            xA_eff_CA = xA_expr + xB_expr / 2
+
+            wAB, wBC, wCA = 1, 1, 1
+            ab_diff_expr = xA_eff_AB - xB_eff_AB
+            bc_diff_expr = xB_eff_BC - xC_eff_BC
+            ca_diff_expr = xC_eff_CA - xA_eff_CA
+        elif interp_scheme == 'kohler':
+            # Kohler: normalized binary projection.
+            sum_AB = xA_expr + xB_expr
+            sum_BC = xB_expr + xC_expr
+            sum_CA = xC_expr + xA_expr
+
+            xA_eff_AB = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_AB, 0)), (xA_expr / sum_AB, True))
+            xB_eff_AB = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_AB, 0)), (xB_expr / sum_AB, True))
+            xB_eff_BC = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_BC, 0)), (xB_expr / sum_BC, True))
+            xC_eff_BC = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_BC, 0)), (xC_expr / sum_BC, True))
+            xC_eff_CA = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_CA, 0)), (xC_expr / sum_CA, True))
+            xA_eff_CA = sp.Piecewise((sp.Rational(1, 2), sp.Eq(sum_CA, 0)), (xA_expr / sum_CA, True))
+
+            wAB, wBC, wCA = 1, 1, 1
+            ab_diff_expr = xA_eff_AB - xB_eff_AB
+            bc_diff_expr = xB_eff_BC - xC_eff_BC
+            ca_diff_expr = xC_eff_CA - xA_eff_CA
         else:
-            raise Exception("Only linear interpolation for binary params is currently supported")
+            raise ValueError(
+                f"Unsupported interp_type '{self.interp_type}'. "
+                "Supported: linear, muggianu, kohler"
+            )
 
         if self.param_format == 'linear':
             l_expr = _L_LINEAR_EXPR
@@ -311,7 +362,10 @@ class ternary_interpolation:
             l1_bc_expr=l_expr.subs({a_sym: L_array[1][2], b_sym: L_array[1][3]}),
             l0_ca_expr=l_expr.subs({a_sym: L_array[2][0], b_sym: L_array[2][1]}),
             l1_ca_expr=l_expr.subs({a_sym: L_array[2][2], b_sym: L_array[2][3]}),
-            l0_abc_expr=self.L_tern[0] if self.L_tern[0] != 0 else 0
+            l0_abc_expr=self.L_tern[0] if self.L_tern[0] != 0 else 0,
+            ab_diff_expr=ab_diff_expr,
+            bc_diff_expr=bc_diff_expr,
+            ca_diff_expr=ca_diff_expr,
         )
 
         tm_mean = np.mean(self.ref_data['T']) # mean melting point in ternary - used for t-dependent H and S forms

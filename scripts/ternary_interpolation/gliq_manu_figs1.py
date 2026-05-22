@@ -9,7 +9,7 @@ import json
 
 def eutectic_fig():
     # eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results_og.xlsx"
-    eut_path = "all_dumps/gliq_manu_test_eut_ultimate/ternary_eutectic_results.xlsx"
+    eut_path = "all_dumps/gliq_manu_eut_new/ternary_eutectic_results.xlsx"
 
     df_eut = pd.read_excel(eut_path)
     # columns_to_drop = ['Reference:']
@@ -17,7 +17,12 @@ def eutectic_fig():
     # drop all rows where 'Eutectic Composition' is NaN
     print(df_eut)
     # exit()
-    df_eut = df_eut.dropna(subset=['Experimental Eut (K)'])
+    # df_eut = df_eut.dropna(subset=['Experimental Eut (K)'])
+
+    # drop all rows that contain NaN values in any of the columns
+    df_eut = df_eut.dropna()
+    print(df_eut)
+    print(len(df_eut))
 
 
     print(df_eut)
@@ -30,6 +35,29 @@ def eutectic_fig():
     print(plt.rcParams['pdf.fonttype'])
 
     df = df_eut.copy()
+
+    # Ellipse tuning knobs:
+    # - Increase ELLIPSE_BOUNDARY_TOL if near-edge systems lose their ellipse.
+    # - Increase MIN_ELLIPSE_MAJOR_AXIS if small separations are hard to see.
+    ELLIPSE_BOUNDARY_TOL = 1e-2
+    MIN_ELLIPSE_MAJOR_AXIS = 0.012
+    MIN_VALID_ELLIPSE_POINTS = 3
+    DRAW_ELLIPSES_ON_TOP = True
+    CIRCLE_MARKER_BORDER_WIDTH = 4.5
+
+    # Per-system overrides for hard cases near corners/edges.
+    # Keys can be either the original row label (e.g., "Al-Ga-Zn")
+    # or a sorted label; both are checked.
+    SYSTEM_ELLIPSE_OVERRIDES = {
+        "Al-Ga-Zn": {
+            "boundary_tol": 5e-2,
+            "min_major_axis": 0.03,
+            "min_valid_points": 1,
+            "force_draw": True,
+            "opacity": 0.25,
+            "line_width": 2.5,
+        }
+    }
 
     # Generate system labels like 'Cd-Sn-Tl'
     df['System'] = df['Ternary'].apply(lambda x: '-'.join(x))
@@ -99,7 +127,26 @@ def eutectic_fig():
 
     for _, row in df.iterrows():
         sys = row['System']
+        sys_sorted = '-'.join(sorted(row['Ternary']))
         color = color_map[sys]
+
+        boundary_tol = ELLIPSE_BOUNDARY_TOL
+        min_major_axis = MIN_ELLIPSE_MAJOR_AXIS
+        min_valid_points = MIN_VALID_ELLIPSE_POINTS
+        force_draw = False
+        ellipse_opacity = 0.16
+        ellipse_line_width = 1.0
+
+        override = SYSTEM_ELLIPSE_OVERRIDES.get(sys)
+        if override is None:
+            override = SYSTEM_ELLIPSE_OVERRIDES.get(sys_sorted)
+        if override is not None:
+            boundary_tol = float(override.get("boundary_tol", boundary_tol))
+            min_major_axis = float(override.get("min_major_axis", min_major_axis))
+            min_valid_points = int(override.get("min_valid_points", min_valid_points))
+            force_draw = bool(override.get("force_draw", force_draw))
+            ellipse_opacity = float(override.get("opacity", ellipse_opacity))
+            ellipse_line_width = float(override.get("line_width", ellipse_line_width))
 
         eut = row['Eut_A_B_C']
         exp = row['Exp_A_B_C']
@@ -109,7 +156,7 @@ def eutectic_fig():
             a=[eut[0]], b=[eut[1]], c=[eut[2]],
             mode='markers', name=f'{sys} (Simulated)',
             marker=dict(color=color, symbol='circle', size=marker_size, opacity=0.8,
-                    line=dict(width=2, color='white'))
+                    line=dict(width=CIRCLE_MARKER_BORDER_WIDTH, color='black'))
         ))
         exp_traces.append(go.Scatterternary(
             a=[exp[0]], b=[exp[1]], c=[exp[2]],
@@ -127,7 +174,7 @@ def eutectic_fig():
         angle = np.arctan2(vec[1], vec[0])
 
         # Ellipse parameters
-        a = dist / 2 * 1.05  # semi-major axis
+        a = max(dist / 2 * 1.05, min_major_axis)  # semi-major axis
         b = a / 4.5           # semi-minor axis, controls "narrowness"
         t = np.linspace(0, 2 * np.pi, 100)
         ellipse_xy = np.stack([a * np.cos(t), b * np.sin(t)])
@@ -139,21 +186,53 @@ def eutectic_fig():
         shifted = rotated.T + center
 
         # Back to ternary
-        tern_points = np.array([to_ternary_coords(p) for p in shifted])
-        tern_points = tern_points[(tern_points >= 0).all(axis=1)]  # valid triangle points
+        tern_points = np.array([to_ternary_coords(p) for p in shifted], dtype=float)
+
+        # Soft-clip near-edge points instead of dropping them aggressively.
+        # This helps preserve ellipses for systems near the triangle boundaries.
+        tern_points = np.clip(tern_points, -boundary_tol, 1.0 + boundary_tol)
+        tern_points = np.clip(tern_points, 0.0, 1.0)
+
+        sums = tern_points.sum(axis=1)
+        valid_sum_mask = sums > 1e-12
+        tern_points = tern_points[valid_sum_mask]
+        sums = sums[valid_sum_mask]
+        if len(tern_points) < min_valid_points:
+            if not force_draw:
+                continue
+
+            # Forced fallback: build a small visible polygon around the segment.
+            if dist > 1e-12:
+                u = vec / dist
+            else:
+                u = np.array([1.0, 0.0])
+            v = np.array([-u[1], u[0]])
+
+            p_a = center + u * min_major_axis + v * (min_major_axis / 6.0)
+            p_b = center - u * min_major_axis + v * (min_major_axis / 6.0)
+            p_c = center - v * (min_major_axis / 3.0)
+            tern_points = np.array([to_ternary_coords(p_a), to_ternary_coords(p_b), to_ternary_coords(p_c)], dtype=float)
+            tern_points = np.clip(tern_points, 0.0, 1.0)
+            fallback_sums = tern_points.sum(axis=1, keepdims=True)
+            fallback_sums[fallback_sums == 0.0] = 1.0
+            tern_points = tern_points / fallback_sums
+        tern_points = tern_points / sums[:, None]
 
         ellipse_traces.append(go.Scatterternary(
             a=tern_points[:, 0], b=tern_points[:, 1], c=tern_points[:, 2],
             mode='lines', fill='toself',
-            line=dict(color=color),
+            line=dict(color=color, width=ellipse_line_width),
             fillcolor=color,
-            opacity=0.1,
+            opacity=ellipse_opacity,
             showlegend=True,
         ))
 
     # Combine and show - order matters for layering (later traces appear on top)
-    # Order: triangle -> ellipses -> squares (experimental) -> circles (simulated) to put circles in foreground
-    fig = go.Figure([triangle_trace] + ellipse_traces + exp_traces + eutectic_traces)
+    if DRAW_ELLIPSES_ON_TOP:
+        # Put ellipses above markers so tiny near-corner deviations remain visible.
+        fig = go.Figure([triangle_trace] + exp_traces + eutectic_traces + ellipse_traces)
+    else:
+        fig = go.Figure([triangle_trace] + ellipse_traces + exp_traces + eutectic_traces)
 
     wd = ht = 1600
     scaler = 50

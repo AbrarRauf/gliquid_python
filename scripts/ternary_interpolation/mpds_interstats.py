@@ -28,6 +28,7 @@ CATEGORY_COLUMNS = [
 # 4) Allow multiple exact combinations:
 #    KEEP_CATEGORY_COMBOS = [["euts"], ["euts", "pers"], ["mpds_euts"]]
 
+# KEEP_CATEGORY_COMBOS = [["mpds_euts"], ["mpds_euts", "mpds_migs"]]
 KEEP_CATEGORY_COMBOS = [["mpds_euts"]]
 # Match behavior:
 # - "exact": row categories must equal one keep combo exactly.
