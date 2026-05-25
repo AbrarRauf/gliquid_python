@@ -5,7 +5,7 @@ import os
 import json
 import pandas as pd
 
-dump_dir = "all_dumps/test_explore/"
+dump_dir = "all_dumps/test_main/"
 read_dir = "all_dumps/binary_fits/"
 
 # Diagnostic settings (edit these directly in the script)
@@ -28,7 +28,8 @@ def plot_ternary_system():
     # tern_sys = ["Tm", "Cu", "Ge"]
     # tern_sys = ["Fe", "Ce", "Si"]
     # tern_sys = ["Bi", "Cd", "Sn"]
-    tern_sys = ["Er", "Mn", "Ge"]
+    # tern_sys = ["Er", "Mn", "Ge"]
+    tern_sys = ["Ce", "Fe", "Si"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
@@ -36,8 +37,8 @@ def plot_ternary_system():
     # tern_param_format = 'linear'
     spec_inter = "CeFeSi"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
     # binary_param_df = pd.read_excel("data/ternary_dft_data/combexp_le_s10e-5_w5e-3_p8.5-filtered-ml.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
 
@@ -66,12 +67,12 @@ def plot_ternary_system():
         elif flipped_sys in binary_param_df['system'].tolist():
             params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
             fitorpred[bin_sys] = "fit"
-        elif bin_sys in binary_param_pred_df['system'].tolist():
-            params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-            fitorpred[bin_sys] = "pred"
-        elif flipped_sys in binary_param_pred_df['system'].tolist():
-            params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-            fitorpred[bin_sys] = "pred"
+        # elif bin_sys in binary_param_pred_df['system'].tolist():
+        #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+        #     fitorpred[bin_sys] = "pred"
+        # elif flipped_sys in binary_param_pred_df['system'].tolist():
+        #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+        #     fitorpred[bin_sys] = "pred"
         else:
             raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
@@ -102,7 +103,7 @@ def plot_ternary_system():
     # print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 500], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=5, delta=0.025, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     # print(plotter.hsx_df)
 
@@ -156,11 +157,11 @@ def plot_ternary_system():
     # print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    # inter_list = [spec_inter]
-    # melting_temps = plotter.get_inter_melting_temps(inter_list)
-    # print(melting_temps)
-    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
-    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
+    inter_list = [spec_inter]
+    melting_temps = plotter.get_inter_melting_temps(inter_list)
+    print(melting_temps)
+    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
+    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
 
     # order by index
     plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)

@@ -242,6 +242,9 @@ class ternary_interpolation:
         self.fit_or_pred = kwargs.get('fit_or_pred', {})  # dict of 'fit' or 'pred' for each binary system
         self.L_dict = kwargs.get('L_dict', {}) # adding functionality to pass in a dict of L parameters on construction
         self.L_tern = kwargs.get('L_tern', [0, 0])  # ternary interaction parameters (H, S)
+        # Plot-only flag: keep polymorph thermodynamics active, but optionally hide
+        # reference polymorph labels on binary TX figures.
+        self.show_reference_polymorph_labels = kwargs.get('show_reference_polymorph_labels', False)
         self.ternary_meta = {}
     
     def init_ref_data(self):
@@ -469,9 +472,34 @@ class ternary_interpolation:
 
         return tern_mp_df
 
-    def add_binary_data(self):
+    def add_binary_data(self, ternary_color_map=None):
         # add binary data to the ternary data and plot the binaries (optional)
         bin_fig_list = []
+
+        def _build_polymorph_transitions(sys_obj):
+            transitions = []
+            for i, comp in enumerate(sys_obj.components):
+                comp_data = sys_obj.component_data.get(comp, {})
+                polymorphs = comp_data.get('polymorphs', [])
+                if not polymorphs:
+                    continue
+
+                ground_state_name = comp
+                for phase in sys_obj.phases:
+                    if phase['name'] != 'L' and 'comp' in phase and phase['comp'] == float(i):
+                        if phase.get('enthalpy', 1) == 0:
+                            ground_state_name = phase['name']
+                            break
+
+                for poly in polymorphs:
+                    transitions.append({
+                        'name': poly['common_name'],
+                        'comp_x_pct': float(i) * 100,
+                        'transition_temp_C': poly['transition_temperature_K'] - 273.15,
+                        'ground_state_name': ground_state_name,
+                    })
+            return transitions
+
         def process_system(sys_name):
             params = self.L_dict[sys_name].copy()
             
@@ -485,24 +513,38 @@ class ternary_interpolation:
                     params[2:] = [-1 * p for p in params[2:]]
                 else:
                     params[2] *= -1
-            
-            sys = BinaryLiquid.from_cache(input=sys_name, params=params, param_format=self.param_format,)
+
+            # Always load/cache binaries in canonical alphabetical order so fitted and
+            # digitized liquidus are plotted on the same x-orientation.
+            sys = BinaryLiquid.from_cache(input=alphabetical_order, params=params, param_format=self.param_format,)
             data = sys.update_phase_points()
             fit_type = self.fit_or_pred[sys_name] 
+            polymorph_transitions = _build_polymorph_transitions(sys)
 
-            print(sys.hsx.df_tx)
-            print(sys.hsx.df)
-            print(sys.hsx.df_tx[sys.hsx.df_tx['label'].str.contains('-Zr')])
-            print(sys.hsx.df[sys.hsx.df['Phase'].str.contains('-Zr')])
-            if "Zr" in sys_name:
-                # exit()
-                pass
+            # print(sys.hsx.df_tx)
+            # print(sys.hsx.df)
+            # print(sys.hsx.df_tx[sys.hsx.df_tx['label'].str.contains('-Zr')])
+            # print(sys.hsx.df[sys.hsx.df['Phase'].str.contains('-Zr')])
+            # if "Zr" in sys_name:
+            #     # exit()
+            #     pass
+
             if fit_type == 'fit':
-                figr = sys.hsx.plot_tx(digitized_liquidus=sys.digitized_liq)
+                figr = sys.hsx.plot_tx(
+                    digitized_liquidus=sys.digitized_liq,
+                    polymorph_transitions=polymorph_transitions,
+                    show_reference_polymorph_labels=self.show_reference_polymorph_labels,
+                    ternary_color_map=ternary_color_map,
+                )
                 # figr = sys.hsx.plot_tx_scatter()
                 # figr = sys.hsx.plot_hsx()
             else:
-                figr = sys.hsx.plot_tx(pred=True)
+                figr = sys.hsx.plot_tx(
+                    pred=True,
+                    polymorph_transitions=polymorph_transitions,
+                    show_reference_polymorph_labels=self.show_reference_polymorph_labels,
+                    ternary_color_map=ternary_color_map,
+                )
                 # figr = sys.hsx.plot_tx_scatter()
                 # figr = sys.hsx.plot_hsx()
             bin_fig_list.append(figr)
@@ -517,7 +559,6 @@ class ternary_interpolation:
     def interpolate(self):
         # create the hsx dataframe for the ternary system
         self.ternary_interpolation() # populates self.hsx_df with ternary liquid phase data
-        self.bin_fig_list = self.add_binary_data()
         self.tern_mp_df = self.get_ternary_form_en(self.tern_sys)
         self.hsx_df = pd.concat([self.hsx_df, self.tern_mp_df], ignore_index=True)
         self.hsx_df = self.hsx_df.drop_duplicates()
@@ -543,14 +584,25 @@ class ternary_gtx_plotter(ternary_interpolation):
 
         solid_phases = self.phases.copy()
         solid_phases.remove('L')
-        # Generate a random color array with at least 100 options
-        def random_color():
-            return f"#{random.randint(0, 0xFFFFFF):06x}"
-        # color_array = [random_color() for _ in range(100)]
 
-        pastel_colors = px.colors.qualitative.Vivid
+        # alternative plotly color scheme
+        pastel_colors = px.colors.qualitative.Dark24_r
         color_array = pastel_colors * (len(solid_phases) // len(pastel_colors) + 1)
 
+        # manual color scheme
+        # color_array = [
+        #     "#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E",
+        #     "#E6AB02", "#A6761D", "#666666", "#E41A1C", "#4DAF4A",
+        #     "#984EA3", "#FF7F00", "#A65628", "#F781BF",
+        #     "#B3B3B3", "#33A02C", "#FB9A99", "#FDBF6F", "#CAB2D6",
+        #     "#FF4500", "#8B4513", "#006400", "#C71585", "#FFD700",
+        #     "#5C4033", "#DC143C", "#9400D3", "#ADFF2F", "#8FBC8F",
+        #     "#CD5C5C", "#B8860B", "#556B2F", "#DA70D6", "#F0E68C",
+        #     "#8B0000", "#9932CC", "#3CB371", "#F4A460", "#FF1493",
+        #     "#708090", "#B22222", "#DEB887", "#800080", "#228B22",
+        #     "#BC8F8F", "#D2691E", "#E9967A", "#483D8B", "#A0522D"
+        # ]  
+        print(len(color_array), "colors available for solid phases")
         self.color_map = dict(zip(solid_phases, color_array))
         self.color_map['L'] = 'cornflowerblue'
 
@@ -569,6 +621,8 @@ class ternary_gtx_plotter(ternary_interpolation):
         for T in self.T_grid:
             self.hsx_df['G'] = self.hsx_df['H'] - T*self.hsx_df['S']
             self.df_Tgroups[T] = self.hsx_df[['x0', 'x1', 'G', 'Phase', 'Colors']].copy()
+
+        self.bin_fig_list = self.add_binary_data(ternary_color_map=self.color_map)
         
         print('Initialization complete')
 

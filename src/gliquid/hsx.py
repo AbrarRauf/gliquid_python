@@ -302,7 +302,9 @@ class HSX:
         return inv_points, combined_list, count_dict
     
     def plot_tx(self, pred: bool = False, digitized_liquidus: list = None,
-                polymorph_transitions: list[dict] | None = None) -> go.Figure:
+                polymorph_transitions: list[dict] | None = None,
+                show_reference_polymorph_labels: bool = True,
+                ternary_color_map: dict = None) -> go.Figure:
         """Plots the binary phase diagram from computed phase boundaries and invariant points.
         
         Args:
@@ -311,9 +313,12 @@ class HSX:
             polymorph_transitions (list[dict]): List of elemental polymorph transitions, each dict with keys:
                 'name' (str), 'comp_x_pct' (float, 0 or 100), 'transition_temp_C' (float),
                 'ground_state_name' (str) for the phase below the transition.
+            show_reference_polymorph_labels (bool): If False, polymorph labels are hidden while
+                polymorph phase handling in the thermodynamic model remains active.
         """
         liq_inv = self.liquidus_invariants()
         inv_points, combined_list = liq_inv[:2]
+        self.phase_color_remap = ternary_color_map if ternary_color_map else self.phase_color_remap
         
         new_tx = []
         for comb in combined_list:
@@ -467,6 +472,9 @@ class HSX:
                     borderpad=5,
                     font=dict(size=12, color='black')
                 )
+            elif not show_reference_polymorph_labels:
+                # Explicitly suppress text labels for reference polymorph phases.
+                pass
             idx_tracker += 1
 
         for key in inv_points.keys():
@@ -479,7 +487,7 @@ class HSX:
                     fig.add_trace(line.data[0])
 
         # --- Polymorph solid-solid transition tie lines and labels ---
-        if polymorph_transitions:
+        if polymorph_transitions and show_reference_polymorph_labels:
             # Sort transitions per side so we can label non-overlapping regions
             lhs_polys = sorted([pt for pt in polymorph_transitions if pt['comp_x_pct'] == 0],
                                key=lambda p: p['transition_temp_C'])

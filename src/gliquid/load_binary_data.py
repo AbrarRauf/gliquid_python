@@ -95,7 +95,11 @@ def validate_and_format_binary_system(input) -> tuple[list[str], str, bool]:
 
     # Validate components as valid composition objects
     [Composition(c) for c in components]
-    return components, '-'.join(components), components_sorted != components
+
+    # NOTE: Always normalize sys_name to alphabetical order so cache filenames
+    # are resolved consistently regardless of input order (e.g., Si-Al vs Al-Si).
+    normalized_sys_name = '-'.join(components_sorted)
+    return components, normalized_sys_name, components_sorted != components
 
 
 def shape_to_list(svgpath: str) -> list[list]:
@@ -241,18 +245,40 @@ def load_mpds_data(input, pd_ind=None) -> tuple[dict, dict, tuple[list[list] | N
               f"T_fusion = {data['T_fusion']} K, polymorphs = {len(data['polymorphs'])}")
 
     if config.dir_structure == 'nested':
-        sys_dir = os.path.join(config.data_dir, sys_name)
-        os.makedirs(sys_dir, exist_ok=True)
+        primary_sys_dir = os.path.join(config.data_dir, sys_name)
+        os.makedirs(primary_sys_dir, exist_ok=True)
     elif config.dir_structure == 'flat':
-        sys_dir = config.data_dir
+        primary_sys_dir = config.data_dir
     else:
         raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
-    
+
+    # NOTE: Be robust to mixed cache layouts (flat vs nested) by searching both.
+    # This prevents false cache misses when config dir_structure doesn't match
+    # where cached files were previously written.
+    candidate_dirs = [primary_sys_dir]
+    nested_dir = os.path.join(config.data_dir, sys_name)
+    flat_dir = config.data_dir
+    if nested_dir not in candidate_dirs:
+        candidate_dirs.append(nested_dir)
+    if flat_dir not in candidate_dirs:
+        candidate_dirs.append(flat_dir)
+
     if pd_ind is None:
-        sys_file = os.path.join(sys_dir, f"{sys_name}.json")
+        # NOTE: If {sys_name}.json is absent but MPDS_PD_0 cache exists,
+        # use MPDS_PD_0 directly to avoid triggering API-key checks.
+        candidate_files = []
+        for cdir in candidate_dirs:
+            candidate_files.append(os.path.join(cdir, f"{sys_name}.json"))
+        for cdir in candidate_dirs:
+            candidate_files.append(os.path.join(cdir, f"{sys_name}_MPDS_PD_0.json"))
+
+        sys_file = next((fp for fp in candidate_files if os.path.exists(fp)), os.path.join(primary_sys_dir, f"{sys_name}.json"))
     elif isinstance(pd_ind, int):
-        sys_file = os.path.join(sys_dir, f"{sys_name}_MPDS_PD_{pd_ind}.json")
-        if not os.path.exists(sys_file) and os.path.exists(os.path.join(sys_dir, f"{sys_name}_MPDS_PD_0.json")):
+        candidate_files = [os.path.join(cdir, f"{sys_name}_MPDS_PD_{pd_ind}.json") for cdir in candidate_dirs]
+        sys_file = next((fp for fp in candidate_files if os.path.exists(fp)), candidate_files[0])
+
+        has_pd0 = any(os.path.exists(os.path.join(cdir, f"{sys_name}_MPDS_PD_0.json")) for cdir in candidate_dirs)
+        if not os.path.exists(sys_file) and has_pd0:
             raise ValueError(f"No matching json with pd_ind={pd_ind} found in cache!")
     else:
         raise ValueError("Input for pd_ind must be an integer or 'None'!")

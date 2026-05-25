@@ -101,6 +101,26 @@ def eutectic_fig():
         a = 1 - b - c
         return [a, b, c]
 
+    # Error metrics after NaN row filtering.
+    temp_differences = df['Eutectic Temp (K)'] - df['Experimental Eut (K)']
+    eut_rmse = np.sqrt(np.mean(temp_differences ** 2))
+    eut_mae = np.mean(np.abs(temp_differences))
+    temp_std = np.std(temp_differences)
+
+    # Composition distance uses straight-line distance in 2D Cartesian coordinates.
+    # The dataset stores eutectic compositions as [x, y] points in triangle projection.
+    eut_xy = np.vstack(df['Eutectic Composition'].to_numpy()).astype(float)
+    exp_xy = np.vstack(df['Exp Eut Composition'].to_numpy()).astype(float)
+    composition_distances = np.linalg.norm(eut_xy - exp_xy, axis=1)
+    mean_composition_distance = np.mean(composition_distances*1)
+    composition_std = np.std(composition_distances*1)
+
+    print(f"Eutectic temperature RMSE (post-NaN filter): {eut_rmse:.2f} K")
+    print(f"Eutectic temperature MAE (post-NaN filter): {eut_mae:.2f} K")
+    print(f"Eutectic temperature std. dev. of differences (post-NaN filter): {temp_std:.2f} K")
+    print(f"Average Cartesian composition distance (post-NaN filter): {mean_composition_distance:.4f}")
+    print(f"Std. dev. of Cartesian composition distance (post-NaN filter): {composition_std:.4f}")
+
 
 
     df['System'] = df['Ternary'].apply(lambda x: '-'.join(x))
@@ -283,8 +303,8 @@ def inter_figure():
     # inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
     # meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
 
-    inter_path = "all_dumps/gliq_manu_test_ultimate/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_test_ultimate/ternary_Gliq_meta_final_linear.json"
+    inter_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
     # df = pd.read_csv(inter_path)
@@ -368,8 +388,8 @@ def inter_figure():
 
     # modify x-axis limits
     # plt.xlim(min_val, max_val - 150)
-    plt.xlim(750, 2500)
-    plt.ylim(750, 2500)
+    plt.xlim(850, 2500)
+    plt.ylim(850, 2500)
 
     # # Custom legend for congruency
     # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
@@ -473,7 +493,7 @@ def inter_figure_filtered():
     plt.show()
 
 def inter_figure_correction():
-    inter_path = "all_dumps/gliq_manu_test7_correction2/optimized_l0_tern_results_current.xlsx"
+    inter_path = "all_dumps/gliq_manu_forreal_correction/optimized_l0_tern_results.xlsx"
     
     # Load the optimization results
     df = pd.read_excel(inter_path)
@@ -1144,10 +1164,10 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    eutectic_fig()
+    # eutectic_fig()
     # inter_figure()
     # inter_figure_filtered()
-    # inter_figure_correction()
+    inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis

@@ -8,9 +8,9 @@ import numpy as np
 import ast
 # from scipy.optimize import minimize_scalar, brentq
 
-dump_dir = "all_dumps/gliq_manu_test7_linear/"
+dump_dir = "all_dumps/gliq_manu_forreal/"
 meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
-final_dir = "all_dumps/gliq_manu_test7_correction3/"
+final_dir = "all_dumps/gliq_manu_forreal_correction/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -258,9 +258,11 @@ def main_optimize():
     tern_param_format = "combined"
     interp = "linear"
 
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
-    ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx")
+    # ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx")
+    ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear.xlsx")
     
     # Load metadata to filter for "All fitted" systems only
     if not os.path.exists(meta_doc):
@@ -271,6 +273,33 @@ def main_optimize():
         with open(meta_doc, 'r') as f:
             metadata = json.load(f)
         print(f"Loaded metadata from: {meta_doc}")
+
+    # Build a robust metadata index keyed by canonical ternary system.
+    # Prefer each record's explicit "system" field because top-level JSON keys include
+    # suffixes like "__idx_...__phase_..." and are not direct system names.
+    metadata_normalized = {}
+    if metadata:
+        for raw_key, value in metadata.items():
+            canonical_key = None
+
+            # Primary path: use explicit "system" field if available.
+            if isinstance(value, dict):
+                system_name = value.get("system")
+                if isinstance(system_name, str) and '-' in system_name:
+                    sys_parts = [p.strip() for p in system_name.split('-') if p.strip()]
+                    if len(sys_parts) == 3:
+                        canonical_key = "-".join(sorted(sys_parts))
+
+            # Fallback path: derive from key prefix before metadata suffix markers.
+            if canonical_key is None and isinstance(raw_key, str):
+                key_prefix = raw_key.split('__', 1)[0]
+                if '-' in key_prefix:
+                    key_parts = [p.strip() for p in key_prefix.split('-') if p.strip()]
+                    if len(key_parts) == 3:
+                        canonical_key = "-".join(sorted(key_parts))
+
+            if canonical_key is not None:
+                metadata_normalized[canonical_key] = value
     
     # Filter for single system testing if specified
     if TEST_SINGLE_FORMULA is not None:
@@ -296,9 +325,9 @@ def main_optimize():
         sorted_sys = sorted(tern_sys)
         system_key = "-".join(sorted_sys)
         
-        if metadata:
-            if system_key in metadata:
-                fit_type = metadata[system_key].get("Fit Type", "")
+        if metadata_normalized:
+            if system_key in metadata_normalized:
+                fit_type = metadata_normalized[system_key].get("Fit Type", "")
                 if fit_type != "All fitted":
                     print(f"\nSkipping {congruent_phase} (system: {system_key}) - Fit Type: {fit_type}")
                     skipped_count += 1
@@ -330,6 +359,12 @@ def main_optimize():
             rmse = []
             norm_mae = []
             norm_rmse = []
+
+            # Some parameter sheets may not include every metric column.
+            # Use guarded reads so missing optional metrics do not abort optimization.
+            def _append_metric_if_present(metric_list, metric_name, row_obj):
+                if metric_name in row_obj.index:
+                    metric_list.append(row_obj[metric_name])
             for bin_sys in binary_sys_labels:
                 flipped_sys = "-".join(sorted(bin_sys.split('-')))
                 order_changed = (bin_sys != flipped_sys)
@@ -337,25 +372,25 @@ def main_optimize():
                 if bin_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == bin_sys].iloc[0]
                     fitorpred[bin_sys] = "fit"
-                    mae.append(params["mae"])
-                    rmse.append(params["rmse"])
-                    norm_mae.append(params["norm_mae"])
-                    norm_rmse.append(params["norm_rmse"])
+                    _append_metric_if_present(mae, "mae", params)
+                    _append_metric_if_present(rmse, "rmse", params)
+                    _append_metric_if_present(norm_mae, "norm_mae", params)
+                    _append_metric_if_present(norm_rmse, "norm_rmse", params)
                 elif flipped_sys in binary_param_df['system'].tolist():
                     params = binary_param_df[binary_param_df['system'] == flipped_sys].iloc[0]
                     fitorpred[bin_sys] = "fit"
-                    mae.append(params["mae"])
-                    rmse.append(params["rmse"])
-                    norm_mae.append(params["norm_mae"])
-                    norm_rmse.append(params["norm_rmse"])
-                elif bin_sys in binary_param_pred_df['system'].tolist():
-                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-                    fitorpred[bin_sys] = "pred"
-                    pred_tag = "Contains predicted"
-                elif flipped_sys in binary_param_pred_df['system'].tolist():
-                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-                    fitorpred[bin_sys] = "pred"
-                    pred_tag = "Contains predicted"
+                    _append_metric_if_present(mae, "mae", params)
+                    _append_metric_if_present(rmse, "rmse", params)
+                    _append_metric_if_present(norm_mae, "norm_mae", params)
+                    _append_metric_if_present(norm_rmse, "norm_rmse", params)
+                # elif bin_sys in binary_param_pred_df['system'].tolist():
+                #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                #     fitorpred[bin_sys] = "pred"
+                #     pred_tag = "Contains predicted"
+                # elif flipped_sys in binary_param_pred_df['system'].tolist():
+                #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                #     fitorpred[bin_sys] = "pred"
+                #     pred_tag = "Contains predicted"
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
@@ -424,7 +459,20 @@ def main_optimize():
             results_list.append(result)
     
     # Create results DataFrame
-    results_df = pd.DataFrame(results_list)
+    # Keep a stable schema even when every system is skipped (results_list empty).
+    results_columns = [
+        'reduced_formula',
+        'elements',
+        'melting_point_k',
+        'initial_gliq_temp',
+        'final_gliq_temp',
+        'l0_tern',
+        'initial_error_k',
+        'final_error_k',
+        'optimization_status',
+        'failure_stage'
+    ]
+    results_df = pd.DataFrame(results_list, columns=results_columns)
     
     # Save results
     output_file = os.path.join(final_dir, "optimized_l0_tern_results.xlsx")
