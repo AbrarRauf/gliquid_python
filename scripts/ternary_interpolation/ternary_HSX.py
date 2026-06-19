@@ -35,7 +35,10 @@ import random
 _phase_transitions_raw = json.load(open(config.phase_transitions_file))
 phase_transitions = _phase_transitions_raw.get('elements', {})
 
-mpr = MPRester(MAPI_KEY)
+# MP thermo payloads can include legacy @module paths (e.g., pymatgen.core.entries)
+# that are no longer importable in newer pymatgen builds. Disabling monty decoding
+# avoids that fragile import path and still returns usable ComputedStructureEntry objects.
+mpr = MPRester(MAPI_KEY, monty_decode=False, use_document_model=False)
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
@@ -1133,16 +1136,16 @@ class ternary_gtx_plotter(ternary_interpolation):
             showlegend=False
         ))
         
-        # fig.add_trace(go.Scatter3d(
-        #     x=[-0.02, 0.48, 0.98, -0.02],
-        #     y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
-        #     z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
-        #     mode='text',
-        # text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
-        #     textposition='top center',
-        #     showlegend=False,
-        #     textfont=dict(size=12)
-        # ))
+        fig.add_trace(go.Scatter3d(
+            x=[-0.02, 0.48, 0.98, -0.02],
+            y=[0.02, np.sqrt(3)/2 + 0.02, .02, .02],
+            z=[self.conds[0]-150, self.conds[0]-150, self.conds[0]-150, self.conds[0]-150],
+            mode='text',
+        text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
+            textposition='top center',
+            showlegend=False,
+            textfont=dict(size=12)
+        ))
 
          
         fig.update_layout(

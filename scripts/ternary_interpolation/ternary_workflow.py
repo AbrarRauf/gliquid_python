@@ -21,7 +21,7 @@ from general_plotter import PhaseBoundaryPlotter
 # ============================================================================
 
 # User-specified ternary system (order does not matter; internally sorted).
-TERNARY_SYSTEM: List[str] = ["Er", "Mn", "Ge"]
+TERNARY_SYSTEM: List[str] = ["Ce", "Fe", "Si"]
 
 # Information tags.
 INCLUDE_POLYMORPHS: bool = True
@@ -30,7 +30,8 @@ INCLUDE_SOLID_SOLUTIONS: bool = False
 # Interpolation and equilibrium settings.
 GRID_DELTA: float = 0.025
 TEMP_DELTA_K: float = 10.0
-TEMP_BOUNDS_K = (500, 2600)  # Example: (900.0, 2600.0). None -> auto bounds from fusion data.
+# Example: (900.0, 2600.0). None -> auto bounds from fusion data.
+TEMP_BOUNDS_K = None
 # Interpolation scheme options from general_HSX: 'linear', 'muggianu', 'kohler'.
 INTERPOLATION_SCHEME: str = "linear"
 VERTICAL_SIMPLICES: bool = False
@@ -42,11 +43,11 @@ VALIDATE_ALL_TEMPERATURE_SLICES: bool = True
 
 # Binary parameter sources.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PRIMARY_PARAM_XLSX = REPO_ROOT / "data" / "ternary_dft_data" / "linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx"
+PRIMARY_PARAM_XLSX = REPO_ROOT / "data" / "ternary_dft_data" / "tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx"
 
 # Output locations.
 OUTPUT_DIR = REPO_ROOT / "all_dumps" / "ternary_workflow"
-OUTPUT_PLOT_PATH = OUTPUT_DIR / f"{'_'.join(TERNARY_SYSTEM)}_tx_plot.html"
+OUTPUT_PLOT_PATH = OUTPUT_DIR / f"{'_'.join(TERNARY_SYSTEM)}_{INTERPOLATION_SCHEME}_tx_plot.html"
 
 
 # ============================================================================
@@ -170,7 +171,7 @@ def main() -> None:
 		comp_b=elements[2],
 		comp_c=elements[0],
 		fixed_components={},
-		phase_extrema_filter=False,
+		phase_extrema_filter=True,
 		ternary_phase_mesh=True,
 		title=f"Full ternary boundary plot ({'-'.join(elements)})",
 	)

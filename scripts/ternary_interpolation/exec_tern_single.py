@@ -5,13 +5,13 @@ import os
 import json
 import pandas as pd
 
-dump_dir = "all_dumps/test_main/"
+dump_dir = "all_dumps/for_PC/"
 read_dir = "all_dumps/binary_fits/"
 
 # Diagnostic settings (edit these directly in the script)
 # Set to a Celsius value (for example, 650.0) to generate a single-slice hull.
 # Set to None to skip the diagnostic slice extraction.
-DIAG_TEMP_C = 2176.8
+DIAG_TEMP_C = None
 
 # If True, only the diagnostic single-slice plot is generated.
 DIAG_ONLY = False
@@ -29,7 +29,8 @@ def plot_ternary_system():
     # tern_sys = ["Fe", "Ce", "Si"]
     # tern_sys = ["Bi", "Cd", "Sn"]
     # tern_sys = ["Er", "Mn", "Ge"]
-    tern_sys = ["Ce", "Fe", "Si"]
+    # tern_sys = ["Ce", "Fe", "Si"]
+    tern_sys = ["Al", "Fe", "Ge"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
@@ -141,14 +142,14 @@ def plot_ternary_system():
 
     # print(plotter.liq_plotting_df)
     # update layout and remove axis and background
-    tern_fig.update_layout(
-        scene = dict(
-            zaxis_visible=False,
-            xaxis_visible=False,
-            yaxis_visible=False,
-            bgcolor='white'
-        )
-    )
+    # tern_fig.update_layout(
+    #     scene = dict(
+    #         zaxis_visible=False,
+    #         xaxis_visible=False,
+    #         yaxis_visible=False,
+    #         bgcolor='white'
+    #     )
+    # )
 
     bin_fig_list = plotter.bin_fig_list
     for i, bin_fig in enumerate(bin_fig_list):
@@ -157,11 +158,11 @@ def plot_ternary_system():
     # print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    inter_list = [spec_inter]
-    melting_temps = plotter.get_inter_melting_temps(inter_list)
-    print(melting_temps)
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
-    print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
+    # inter_list = [spec_inter]
+    # melting_temps = plotter.get_inter_melting_temps(inter_list)
+    # print(melting_temps)
+    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
+    # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
 
     # order by index
     plotter.plotting_df = plotter.plotting_df.sort_index().reset_index(drop=True)
