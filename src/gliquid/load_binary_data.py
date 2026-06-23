@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import json
+import itertools
 import numpy as np
 
 from emmet.core.thermo import ThermoType
@@ -22,7 +23,7 @@ except ImportError:
     MPDSDataTypes = None
     APIError = Exception
 from pymatgen.core import Composition, Element, Structure
-from pymatgen.entries.computed_entries import ComputedEntry
+from pymatgen.entries.computed_entries import ComputedEntry, ComputedStructureEntry
 from pymatgen.analysis.phase_diagram import PhaseDiagram, CompoundPhaseDiagram
 from pymatgen.entries.mixing_scheme import MaterialsProjectDFTMixingScheme
 import gliquid.config as config
@@ -30,6 +31,43 @@ import gliquid.config as config
 # Load phase transitions database (replaces fusion_enthalpies, fusion_temperatures, vaporization_temperatures)
 _phase_transitions_raw = json.load(open(config.phase_transitions_file)) if os.path.exists(config.phase_transitions_file) else {}
 phase_transitions = _phase_transitions_raw.get('elements', {})
+_LEGACY_MODULE_MAP = {
+    "pymatgen.core.entries": "pymatgen.entries",
+    "pymatgen.analysis.compatibility": "pymatgen.entries.compatibility",
+}
+_COMPUTED_ENTRY_CLASSES = {
+    "ComputedEntry",
+    "ComputedStructureEntry",
+    "ConstantEnergyAdjustment",
+    "CompositionEnergyAdjustment",
+    "TemperatureEnergyAdjustment",
+}
+
+
+def _normalize_entry_dict(obj):
+    if isinstance(obj, dict):
+        return {
+            key: (
+                "pymatgen.entries.computed_entries"
+                if value == "pymatgen.entries" and obj.get("@class") in _COMPUTED_ENTRY_CLASSES
+                else _LEGACY_MODULE_MAP.get(value, value)
+                if key == "@module" and isinstance(value, str)
+                else _normalize_entry_dict(value)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_normalize_entry_dict(value) for value in obj]
+    return obj
+
+
+def _chemsys_labels(components: list[str]) -> list[str]:
+    components = sorted(set(components))
+    return [
+        "-".join(sorted(combo))
+        for n_elems in range(1, len(components) + 1)
+        for combo in itertools.combinations(components, n_elems)
+    ]
 
 # Derived convenience dicts from phase_transitions.json
 liquid_enthalpies = {}   # Cumulative H to liquid (J/mol), relative to DFT ground state
@@ -487,8 +525,8 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str, keep_
         # Avoid fragile Monty decoding of legacy @module paths (e.g. pymatgen.core.entries)
         # present in some MP payloads; this keeps decoding compatible with newer pymatgen.
         with client_class(api_key, monty_decode=False, use_document_model=False) as MPR:
-            criteria = {'thermo_types': [thermo_type]} if thermo_type else {}
-            return MPR.get_entries_in_chemsys(components, additional_criteria=criteria)
+            criteria = {'thermo_types': [thermo_type]} if thermo_type else {"thermo_types": ["GGA_GGA+U"]}
+            return _normalize_entry_dict(MPR.get_entries(_chemsys_labels(components), additional_criteria=criteria))
 
     new_mp_api_key = os.getenv('NEW_MP_API_KEY')
     scan_entries, ggau_entries = [], []
@@ -499,13 +537,13 @@ def _get_dft_entries_from_components(components: list[str], dft_type: str, keep_
         ggau_entries = fetch_entries(new_mp_api_key, MPRester, ThermoType.GGA_GGA_U)
 
     if dft_type == 'MIXED':
-        entries = MaterialsProjectDFTMixingScheme().process_entries(scan_entries + ggau_entries, verbose=False)
+        raw_entries = [ComputedStructureEntry.from_dict(e) for e in scan_entries + ggau_entries]
+        entries = MaterialsProjectDFTMixingScheme().process_entries(raw_entries, verbose=False)
+        computed_entry_dicts = [e.as_dict() for e in entries]
     elif dft_type == 'GGA':
-        entries = ggau_entries
+        computed_entry_dicts = ggau_entries
     elif dft_type == 'R2SCAN':
-        entries = scan_entries
-
-    computed_entry_dicts = [e.as_dict() for e in entries]
+        computed_entry_dicts = scan_entries
 
     # Filter out Mg149 phase and remove run data to reduce cache size
     computed_entry_dicts = [e for e in computed_entry_dicts if e['composition'].get('Mg', 0) != 149]
@@ -549,7 +587,21 @@ def get_dft_convexhull(input, dft_type='GGA',
     else:
         raise ValueError(f"Invalid dir_structure '{config.dir_structure}'. Must be 'nested' or 'flat'.")
     
-    dft_entries_file = os.path.join(sys_dir, f"{sys_name}_ENTRIES_MP_{dft_type}.json")
+    candidate_dirs = []
+    for cdir in (sys_dir, config.data_dir, os.path.join(config.data_dir, sys_name)):
+        if cdir not in candidate_dirs:
+            candidate_dirs.append(cdir)
+
+    entry_filenames = [f"{sys_name}_ENTRIES_MP_{dft_type}.json"]
+    if dft_type == "GGA":
+        entry_filenames.append(f"{sys_name}_ENTRIES_MP_GGA_GGA+U.json")
+
+    candidate_files = [
+        os.path.join(cdir, filename)
+        for filename in entry_filenames
+        for cdir in candidate_dirs
+    ]
+    dft_entries_file = next((fp for fp in candidate_files if os.path.exists(fp)), candidate_files[0])
 
     # Yb-containing structures are only available with R2SCAN functional
     # See https://docs.materialsproject.org/changes/database-versions#v2023.11.1
@@ -561,7 +613,7 @@ def get_dft_convexhull(input, dft_type='GGA',
 
     if os.path.exists(dft_entries_file):
         with open(dft_entries_file, "r") as f:
-            computed_entry_dicts = json.load(f)
+            computed_entry_dicts = _normalize_entry_dict(json.load(f))
         if verbose:
             print("Loading cached DFT entry data.")
     else:

@@ -9,6 +9,7 @@ import os
 import time
 import random
 import json
+import itertools
 import numpy as np
 import pandas as pd
 import sympy as sp
@@ -29,10 +30,58 @@ import gliquid.binary as binary
 from gliquid.binary import BinaryLiquid, linear_expr, combined_expr
 from gliquid.extensive_hull_main import gliq_lowerhull3
 
-new_mp_api_key = os.getenv('NEW_MP_API_KEY')
-if not new_mp_api_key:
-    raise ValueError("NEW_MP_API_KEY not found in environment variables!")
-mpr = MPRester(new_mp_api_key)
+_mpr = None
+_LEGACY_MODULE_MAP = {
+    "pymatgen.core.entries": "pymatgen.entries",
+    "pymatgen.analysis.compatibility": "pymatgen.entries.compatibility",
+}
+_COMPUTED_ENTRY_CLASSES = {
+    "ComputedEntry",
+    "ComputedStructureEntry",
+    "ConstantEnergyAdjustment",
+    "CompositionEnergyAdjustment",
+    "TemperatureEnergyAdjustment",
+}
+
+
+def _normalize_entry_dict(obj):
+    if isinstance(obj, dict):
+        return {
+            key: (
+                "pymatgen.entries.computed_entries"
+                if value == "pymatgen.entries" and obj.get("@class") in _COMPUTED_ENTRY_CLASSES
+                else _LEGACY_MODULE_MAP.get(value, value)
+                if key == "@module" and isinstance(value, str)
+                else _normalize_entry_dict(value)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_normalize_entry_dict(value) for value in obj]
+    return obj
+
+
+def _get_mpr():
+    global _mpr
+    if _mpr is None:
+        new_mp_api_key = os.getenv('NEW_MP_API_KEY')
+        if not new_mp_api_key:
+            raise ValueError("NEW_MP_API_KEY not found in environment variables!")
+        _mpr = MPRester(new_mp_api_key, monty_decode=False, use_document_model=False)
+    return _mpr
+
+
+def _get_raw_entries_in_chemsys(elements):
+    elements = sorted(set(elements))
+    chemsyses = [
+        "-".join(sorted(combo))
+        for n_elems in range(1, len(elements) + 1)
+        for combo in itertools.combinations(elements, n_elems)
+    ]
+    return _get_mpr().get_entries(
+        chemsyses,
+        additional_criteria={"thermo_types": ["GGA_GGA+U"]},
+    )
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
@@ -332,10 +381,9 @@ class ternary_interpolation:
         if os.path.exists(json_path):
             print("Loading cached ternary DFT entry data")
             with open(json_path, 'r') as f:
-                entry_dicts = json.load(f)
+                entry_dicts = _normalize_entry_dict(json.load(f))
         else:
-            entries = mpr.get_entries_in_chemsys(sys)
-            entry_dicts = [e.as_dict() for e in entries]
+            entry_dicts = _normalize_entry_dict(jsanitize(_get_raw_entries_in_chemsys(sys)))
 
             # Filter out Mg149 phase and remove run data to reduce cache size
             entry_dicts = [e for e in entry_dicts if e['composition'].get('Mg', 0) != 149]

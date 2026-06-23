@@ -31,14 +31,63 @@ from gliquid.binary import (
 sys.path.append(os.path.dirname(os.path.abspath(__file__))) # If importing this file into a script from a different dir
 from extensive_hull_main import gliq_lowerhull3
 import random
+import itertools
 
 _phase_transitions_raw = json.load(open(config.phase_transitions_file))
 phase_transitions = _phase_transitions_raw.get('elements', {})
 
 # MP thermo payloads can include legacy @module paths (e.g., pymatgen.core.entries)
-# that are no longer importable in newer pymatgen builds. Disabling monty decoding
-# avoids that fragile import path and still returns usable ComputedStructureEntry objects.
-mpr = MPRester(MAPI_KEY, monty_decode=False, use_document_model=False)
+# that are no longer importable in newer pymatgen builds. Keep the client lazy so
+# cached runs do not contact MP at import time.
+_mpr = None
+_LEGACY_MODULE_MAP = {
+    "pymatgen.core.entries": "pymatgen.entries",
+    "pymatgen.analysis.compatibility": "pymatgen.entries.compatibility",
+}
+_COMPUTED_ENTRY_CLASSES = {
+    "ComputedEntry",
+    "ComputedStructureEntry",
+    "ConstantEnergyAdjustment",
+    "CompositionEnergyAdjustment",
+    "TemperatureEnergyAdjustment",
+}
+
+
+def _normalize_entry_dict(obj):
+    if isinstance(obj, dict):
+        return {
+            key: (
+                "pymatgen.entries.computed_entries"
+                if value == "pymatgen.entries" and obj.get("@class") in _COMPUTED_ENTRY_CLASSES
+                else _LEGACY_MODULE_MAP.get(value, value)
+                if key == "@module" and isinstance(value, str)
+                else _normalize_entry_dict(value)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_normalize_entry_dict(value) for value in obj]
+    return obj
+
+
+def _get_mpr():
+    global _mpr
+    if _mpr is None:
+        _mpr = MPRester(MAPI_KEY, monty_decode=False, use_document_model=False)
+    return _mpr
+
+
+def _get_raw_entries_in_chemsys(elements):
+    elements = sorted(set(elements))
+    chemsyses = [
+        "-".join(sorted(combo))
+        for n_elems in range(1, len(elements) + 1)
+        for combo in itertools.combinations(elements, n_elems)
+    ]
+    return _get_mpr().get_entries(
+        chemsyses,
+        additional_criteria={"thermo_types": ["GGA_GGA+U"]},
+    )
 
 # Define all required symbols
 R = 8.314  # J/(mol*K), universal gas constant
@@ -404,11 +453,10 @@ class ternary_interpolation:
         if os.path.exists(json_path):
             print("Loading ternary DFT energies from cache")
             with open(json_path, 'r') as f:
-                sanitized_entries = json.load(f)
+                sanitized_entries = _normalize_entry_dict(json.load(f))
         else:
             print("Reading ternary DFT energies from MP")
-            entries = mpr.get_entries_in_chemsys(sys)
-            sanitized_entries = jsanitize(entries)
+            sanitized_entries = _normalize_entry_dict(jsanitize(_get_raw_entries_in_chemsys(sys)))
             with open(json_path, 'w') as f:
                 json.dump(sanitized_entries, f)
         

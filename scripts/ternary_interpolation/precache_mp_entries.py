@@ -11,6 +11,7 @@ where <System> is alphabetically sorted, e.g. Hf-Nb-W-Zr.
 from __future__ import annotations
 
 import json
+import itertools
 from pathlib import Path
 from typing import List, Sequence
 
@@ -39,6 +40,17 @@ MP_API_KEY_OVERRIDE = None
 
 # If False, existing cache files are skipped.
 FORCE_OVERWRITE = False
+_LEGACY_MODULE_MAP = {
+	"pymatgen.core.entries": "pymatgen.entries",
+	"pymatgen.analysis.compatibility": "pymatgen.entries.compatibility",
+}
+_COMPUTED_ENTRY_CLASSES = {
+	"ComputedEntry",
+	"ComputedStructureEntry",
+	"ConstantEnergyAdjustment",
+	"CompositionEnergyAdjustment",
+	"TemperatureEnergyAdjustment",
+}
 
 
 def _normalize_elements(elements: Sequence[str]) -> List[str]:
@@ -46,6 +58,23 @@ def _normalize_elements(elements: Sequence[str]) -> List[str]:
 	if len(elems) < 3:
 		raise ValueError(f"Expected at least 3 elements, got: {elements}")
 	return sorted(elems)
+
+
+def _normalize_entry_dict(obj):
+	if isinstance(obj, dict):
+		return {
+			key: (
+				"pymatgen.entries.computed_entries"
+				if value == "pymatgen.entries" and obj.get("@class") in _COMPUTED_ENTRY_CLASSES
+				else _LEGACY_MODULE_MAP.get(value, value)
+				if key == "@module" and isinstance(value, str)
+				else _normalize_entry_dict(value)
+			)
+			for key, value in obj.items()
+		}
+	if isinstance(obj, list):
+		return [_normalize_entry_dict(value) for value in obj]
+	return obj
 
 
 def _cache_one_system(cache_dir: Path, elements: Sequence[str], api_key: str, force: bool) -> None:
@@ -58,10 +87,18 @@ def _cache_one_system(cache_dir: Path, elements: Sequence[str], api_key: str, fo
 		return
 
 	print(f"[FETCH] {system_name} -> {cache_path}")
-	with MPRester(api_key) as mpr:
-		entries = mpr.get_entries_in_chemsys(elements_norm)
+	chemsyses = [
+		"-".join(sorted(combo))
+		for n_elems in range(1, len(elements_norm) + 1)
+		for combo in itertools.combinations(elements_norm, n_elems)
+	]
+	with MPRester(api_key, monty_decode=False, use_document_model=False) as mpr:
+		entries = mpr.get_entries(
+			chemsyses,
+			additional_criteria={"thermo_types": ["GGA_GGA+U"]},
+		)
 
-	serialized = jsanitize(entries)
+	serialized = _normalize_entry_dict(jsanitize(entries))
 	with open(cache_path, "w", encoding="utf-8") as f:
 		json.dump(serialized, f)
 

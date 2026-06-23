@@ -34,6 +34,34 @@ DEFAULT_MP_API_KEY = mpapi_key
 
 R = 8.314  # J/(mol*K)
 EV_PER_ATOM_TO_J_PER_MOL = 96485.33212
+_LEGACY_MODULE_MAP = {
+    "pymatgen.core.entries": "pymatgen.entries",
+    "pymatgen.analysis.compatibility": "pymatgen.entries.compatibility",
+}
+_COMPUTED_ENTRY_CLASSES = {
+    "ComputedEntry",
+    "ComputedStructureEntry",
+    "ConstantEnergyAdjustment",
+    "CompositionEnergyAdjustment",
+    "TemperatureEnergyAdjustment",
+}
+
+
+def _normalize_entry_dict(obj):
+    if isinstance(obj, dict):
+        return {
+            key: (
+                "pymatgen.entries.computed_entries"
+                if value == "pymatgen.entries" and obj.get("@class") in _COMPUTED_ENTRY_CLASSES
+                else _LEGACY_MODULE_MAP.get(value, value)
+                if key == "@module" and isinstance(value, str)
+                else _normalize_entry_dict(value)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_normalize_entry_dict(value) for value in obj]
+    return obj
 
 REF_SS_PHASES = ("BCC", "FCC", "HCP")
 REF_SS_SPACEGROUPS = {
@@ -619,9 +647,9 @@ class GeneralInterpolation:
         """Lazy initialization of Materials Project client."""
         if self._mpr is None:
             if self._mp_api_key:
-                self._mpr = MPRester(self._mp_api_key)
+                self._mpr = MPRester(self._mp_api_key, monty_decode=False, use_document_model=False)
             else:
-                self._mpr = MPRester(DEFAULT_MP_API_KEY)
+                self._mpr = MPRester(DEFAULT_MP_API_KEY, monty_decode=False, use_document_model=False)
         return self._mpr
     
     # =========================================================================
@@ -1280,11 +1308,18 @@ class GeneralInterpolation:
         if use_cache and os.path.exists(cache_path):
             print(f"Loading MP entries from cache: {cache_path}")
             with open(cache_path, 'r') as f:
-                return json.load(f)
+                return _normalize_entry_dict(json.load(f))
         
         print(f"Fetching MP entries for {system_name}...")
-        entries = self.mpr.get_entries_in_chemsys(self.elements)
-        sanitized = jsanitize(entries)
+        chemsyses = [
+            "-".join(sorted(combo))
+            for n_elems in range(1, len(self.elements) + 1)
+            for combo in combinations(self.elements, n_elems)
+        ]
+        sanitized = _normalize_entry_dict(jsanitize(self.mpr.get_entries(
+            chemsyses,
+            additional_criteria={"thermo_types": ["GGA_GGA+U"]},
+        )))
         
         with open(cache_path, 'w') as f:
             json.dump(sanitized, f)
