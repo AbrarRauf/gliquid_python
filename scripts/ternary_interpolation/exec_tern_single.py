@@ -30,13 +30,14 @@ def plot_ternary_system():
     # tern_sys = ["Bi", "Cd", "Sn"]
     # tern_sys = ["Er", "Mn", "Ge"]
     # tern_sys = ["Ce", "Fe", "Si"]
-    tern_sys = ["Al", "Fe", "Ge"]
+    # tern_sys = ["Al", "Fe", "Ge"]
+    tern_sys = ["Sm", "Fe", "Ge"]
     # tern_sys = ["Ge", "Ti", "Bi"]
     # tern_sys = ["Ba", "Mg", "Si"]
     tern_param_format = 'combined'  
     # bin_param_format = 'linear'
     # tern_param_format = 'linear'
-    spec_inter = "CeFeSi"
+    spec_inter = "Sm(FeGe)2"
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
     # binary_param_df = pd.read_excel("data/ternary_dft_data/linear_le_s5e-5_w3e-2_p3-filtered-matrix.xlsx")
@@ -158,9 +159,9 @@ def plot_ternary_system():
     # print(plotter.equil_df_list)
 
     # exctract melting temperatures of specific phases
-    # inter_list = [spec_inter]
-    # melting_temps = plotter.get_inter_melting_temps(inter_list)
-    # print(melting_temps)
+    inter_list = [spec_inter]
+    melting_temps = plotter.get_inter_melting_temps(inter_list)
+    print(melting_temps)
     # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter] + 273.15, "K")
     # print("For l0_tern =", l0_tern, "Melting point", melting_temps[spec_inter], "C")
 

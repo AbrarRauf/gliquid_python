@@ -8,7 +8,7 @@ import numpy as np
 import ast
 from collections import Counter
 
-dump_dir = "all_dumps/gliq_manu_forreal_kohler/"
+dump_dir = "all_dumps/gliq_manu_diagnose1/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -44,15 +44,17 @@ def main():
                     'Fe', 'Ga', 'Gd', 'Ge', 'Hf', 'Hg', 'Ho', 'In', 'Ir', 'La', 'Li', 'Lu', 'Mg', 'Mn', 'Mo', 'Na', 'Nb', 
                     'Nd', 'Ni', 'Os', 'Pb', 'Pr', 'Rb', 'Re', 'Rh', 'Ru', 'Sc', 'Si', 'Sm', 'Sn', 'Sr', 'Ta', 'Tb', 'Th', 
                     'Ti', 'Tl', 'Tm', 'V', 'W', 'Y', 'Yb', 'Zn', 'Zr']
-    print(len(only_include))
+
+    # only_include = None
+    print(len(only_include) if only_include is not None else "No include filter")
 
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     tern_param_format = "combined"
-    interp = "kohler"
+    interp = "linear"
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered_IQR.xlsx")
 
@@ -135,7 +137,7 @@ def main():
         sorted_sys = sorted([str(e) for e in tern_sys])
         entry_key = f"{'-'.join(sorted_sys)}__idx_{i}__phase_{congruent_phase}"
 
-        if not all(elem in only_include for elem in sorted_sys):
+        if only_include is not None and not all(elem in only_include for elem in sorted_sys):
             Error_dict[entry_key] = {
                 "status": "skipped",
                 "system": "-".join(sorted_sys),

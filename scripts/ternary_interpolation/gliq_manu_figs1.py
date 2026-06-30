@@ -290,6 +290,27 @@ def eutectic_fig():
 
     fig.show()
 
+def inter_figure_raw():
+    # inter_path = "all_dumps/gliq_manu/ternary_Gliq_mps.xlsx"
+    inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+    df = pd.read_excel(inter_path)
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(df['melting_point_k'], df['gliq_melting_temp'], c='blue', s=20, alpha=0.7)
+    plt.xlabel('MPDS Congruent Melting Temperature (K)')
+    plt.ylabel('Interpolated Melting Temperature (K)')
+
+    plt.tick_params(axis='both', which='major', labelsize=12)
+
+    min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
+    max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max())
+    plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
+
+    plt.xlim(500, 2500)
+    plt.ylim(500, 2500)
+    plt.tight_layout()
+    plt.show()
+
 
 def inter_figure(): 
     # Font settings - change these to customize appearance
@@ -300,11 +321,13 @@ def inter_figure():
     # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
     # meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
-    # inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
-    # meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
+    # inter_path = "all_dumps/gliq_manu_test_ultimate2/ternary_Gliq_mps_final_linear_updated.xlsx"
+    # meta_data_path = "all_dumps/gliq_manu_test_ultimate2/ternary_Gliq_meta_final_linear.json"
 
     inter_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_mps_final_linear.xlsx"
     meta_data_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_meta_final_linear.json"
+    # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
+    # meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
     # df = pd.read_csv(inter_path)
@@ -391,6 +414,9 @@ def inter_figure():
     plt.xlim(850, 2500)
     plt.ylim(850, 2500)
 
+    # plt.xlim(500, 2500)
+    # plt.ylim(500, 2500)
+
     # # Custom legend for congruency
     # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
     #            for label, color in colors.items()]
@@ -403,7 +429,7 @@ def inter_figure():
 
 
 def inter_figure_filtered():
-    inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_updated.xlsx"
+    inter_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear.xlsx"
     meta_data_path = "all_dumps/gliq_manu_test7_linear/ternary_Gliq_meta_final_linear.json"
 
     df = pd.read_excel(inter_path)
@@ -431,6 +457,9 @@ def inter_figure_filtered():
 
     print(len(df_filtered))
     
+    # dump filtered dataframe to xlsx
+    df_filtered.to_excel("all_dumps/gliq_manu_test7_linear/ternary_Gliq_mps_final_linear_filtered.xlsx", index=False)
+
     print(f"Original points: {len(df)}, Filtered points: {len(df_filtered)}")
     
     # Calculate and print RMSE between interpolated and MPDS values for filtered data
@@ -466,12 +495,12 @@ def inter_figure_filtered():
         linewidths=0
     )
     # Toggle label by commenting/uncommenting
-    texts = []
-    for _, row in df.iterrows():
-        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
+    # texts = []
+    # for _, row in df.iterrows():
+    #     texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
 
     # Adjust text to reduce overlaps
-    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+    # adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df_filtered['melting_point_k'].min(), df_filtered['gliq_melting_temp'].min())
@@ -996,7 +1025,7 @@ def binary_L_parameter_analysis(include_predicted=True, deviation_metric='mad'):
         if len(param_values) < 3:  # Need all 3 binary systems
             return 0.0
         
-        # Calculate average magnitude
+        # Calculate average magnitude/inte
         avg_magnitude = np.mean(param_values)
         return avg_magnitude
     
@@ -1165,9 +1194,10 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 def main():
     # eutectic_fig()
-    # inter_figure()
+    inter_figure()
+    # inter_figure_raw()
     # inter_figure_filtered()
-    inter_figure_correction()
+    # inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis
