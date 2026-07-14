@@ -24,8 +24,7 @@ if not os.path.exists(final_dir):
 # Set to a specific formula to test a single system, or None to process all
 # For optimization: 
 # TEST_SINGLE_FORMULA = "Tm(CuGe)2"
-TEST_SINGLE_FORMULA = None  # Uncomment this line to process all systems
-
+TEST_SINGLE_FORMULA = None  
 # TEST_SINGLE_SYSTEM = ["In", "Ag", "Se"]
 TEST_SINGLE_SYSTEM = None 
 # ============================================================================
@@ -251,6 +250,63 @@ def optimize_l0_tern(tern_sys, binary_L_dict, fitorpred, tern_param_format, inte
             print(f"  Most common failure stage: {most_common_failure}")
     
     return best_l0, best_temp, False, error_message, most_common_failure
+
+
+def build_optimization_summary(results_df, skipped_count):
+    def error_stats(label, error_col):
+        valid = results_df.dropna(subset=[error_col, 'melting_point_k'])
+        errors = valid[error_col].astype(float)
+        abs_errors = errors.abs()
+        ape = np.where(valid['melting_point_k'] != 0, abs_errors / valid['melting_point_k'].abs() * 100.0, np.nan)
+        mape = np.nanmean(ape) if np.isfinite(ape).any() else np.nan
+        return [
+            f"{label}:",
+            f"  N: {len(valid)}",
+            f"  MAE: {abs_errors.mean():.2f} K",
+            f"  MAPE: {mape:.2f}%",
+            f"  RMSE: {np.sqrt(np.mean(errors ** 2)):.2f} K",
+            f"  Bias: {errors.mean():+.2f} K",
+            f"  Median absolute error: {abs_errors.median():.2f} K",
+            f"  Standard deviation: {errors.std(ddof=1):.2f} K",
+            f"  Min/Max absolute error: {abs_errors.min():.2f} / {abs_errors.max():.2f} K",
+        ]
+
+    successful = results_df[results_df['optimization_status'].str.contains('Success', na=False)]
+    partial = results_df[results_df['optimization_status'].str.contains('Partial', na=False)]
+    failed = results_df[results_df['optimization_status'].str.contains('Failed|Error', na=False)]
+    comparable = results_df.dropna(subset=['initial_error_k', 'final_error_k', 'melting_point_k'])
+    initial_abs = comparable['initial_error_k'].abs()
+    final_abs = comparable['final_error_k'].abs()
+    improvement = initial_abs - final_abs
+
+    lines = [
+        "Optimized l0 ternary summary",
+        "=" * 30,
+        f"Total systems processed: {len(results_df)}",
+        f"Skipped (not 'All fitted'): {skipped_count}",
+        f"Successful (<=10K error): {len(successful)}",
+        f"Partial success (>10K error): {len(partial)}",
+        f"Failed: {len(failed)}",
+        "",
+        *error_stats("Initial errors", "initial_error_k"),
+        "",
+        *error_stats("Final errors", "final_error_k"),
+    ]
+
+    if len(comparable) > 0:
+        lines += [
+            "",
+            "Initial-to-final improvement:",
+            f"  Comparable systems: {len(comparable)}",
+            f"  Mean absolute error reduction: {improvement.mean():+.2f} K",
+            f"  Median absolute error reduction: {improvement.median():+.2f} K",
+            f"  MAE percent reduction: {((1.0 - final_abs.mean() / initial_abs.mean()) * 100.0) if initial_abs.mean() != 0 else np.nan:.2f}%",
+            f"  Improved systems: {(improvement > 0).sum()}",
+            f"  Unchanged systems: {(improvement == 0).sum()}",
+            f"  Worsened systems: {(improvement < 0).sum()}",
+        ]
+
+    return lines
 
 
 def main_optimize():
@@ -481,22 +537,13 @@ def main_optimize():
     print(f"Results saved to: {output_file}")
     print(f"{'='*70}")
     
-    # Print summary statistics
-    successful = results_df[results_df['optimization_status'] == 'Success']
-    partial = results_df[results_df['optimization_status'].str.contains('Partial', na=False)]
-    failed = results_df[results_df['optimization_status'].str.contains('Failed|Error', na=False)]
-    
-    print(f"\nSummary:")
-    print(f"  Total systems processed: {len(results_df)}")
-    print(f"  Skipped (not 'All fitted'): {skipped_count}")
-    print(f"  Successful (≤10K error): {len(successful)}")
-    print(f"  Partial success (>10K error): {len(partial)}")
-    print(f"  Failed: {len(failed)}")
-    
-    if len(successful) > 0:
-        print(f"\nSuccessful optimizations:")
-        print(f"  Mean final error: {successful['final_error_k'].abs().mean():.2f}K")
-        print(f"  Max final error: {successful['final_error_k'].abs().max():.2f}K")
+    summary_lines = build_optimization_summary(results_df, skipped_count)
+    summary_file = os.path.join(final_dir, "optimized_l0_summary.txt")
+    with open(summary_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(summary_lines) + "\n")
+
+    print("\n" + "\n".join(summary_lines))
+    print(f"\nSummary saved to: {summary_file}")
 
 
 def main_post():
@@ -635,5 +682,5 @@ def main_post():
 
 
 if __name__ == "__main__":
-    # main_optimize()
-    main_post()
+    main_optimize()
+    # main_post()

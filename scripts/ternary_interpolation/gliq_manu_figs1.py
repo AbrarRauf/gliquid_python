@@ -316,6 +316,17 @@ def inter_figure():
     # Font settings - change these to customize appearance
     TICK_LABEL_SIZE = 12  # Change this to resize tick labels
     AXIS_LABEL_SIZE = 12  # Change this to resize axis labels
+    COLOR_BY_FIT_TYPE = True
+    COLOR_BY_CONGRUENCY = False
+    SHOW_LINEAR_FIT = True
+    SINGLE_MARKER_COLOR = 'tab:blue'
+    SHOW_COMPOUND_LABELS = True
+    LABEL_FONT_SIZE = 8
+    LABEL_MAX_COUNT = 18
+    LABEL_NEAR_FIT_MIN_COUNT = 5
+    LABEL_MIN_SPACING = 0.03
+    LABEL_CONNECTOR_NEIGHBOR_RADIUS = 0.08
+    LABEL_CONNECTOR_COLOR = '0.35'
     plt.rcParams['font.family'] = 'Arial'  # Set font to Arial
     
     # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
@@ -324,8 +335,12 @@ def inter_figure():
     # inter_path = "all_dumps/gliq_manu_test_ultimate2/ternary_Gliq_mps_final_linear_updated.xlsx"
     # meta_data_path = "all_dumps/gliq_manu_test_ultimate2/ternary_Gliq_meta_final_linear.json"
 
-    inter_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_mps_final_linear.xlsx"
-    meta_data_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_meta_final_linear.json"
+    # inter_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_mps_final_linear.xlsx"
+    # meta_data_path = "all_dumps/gliq_manu_forreal/ternary_Gliq_meta_final_linear.json"
+
+    inter_path = "all_dumps/gliq_manu_forreal_plusML/ternary_Gliq_mps_final_linear.xlsx"
+    meta_data_path = "all_dumps/gliq_manu_forreal_plusML/ternary_Gliq_meta_final_linear.json"
+
     # inter_path = "all_dumps/gliq_manu_test4/ternary_Gliq_mps_final_linear.xlsx"
     # meta_data_path = "all_dumps/gliq_manu_test4/ternary_Gliq_meta_final_linear.json"
 
@@ -342,9 +357,13 @@ def inter_figure():
     # Create system identifier from elements list (A-B-C format)
     df['system_key'] = df['elements'].apply(lambda x: '-'.join(sorted(x)))
     
-    # Check if system has "All fitted" fit type
-    df['contains_pred'] = df['system_key'].apply(
-        lambda x: meta_data.get(x, {}).get('Fit Type') == 'Contains predicted'
+    # Check if system has "Contains predicted" fit type
+    df['contains_pred'] = df.apply(
+        lambda row: meta_data.get(
+            f"{row['system_key']}__idx_{row['source_row_idx']}__phase_{row['reduced_formula']}",
+            meta_data.get(row['system_key'], {})
+        ).get('Fit Type') == 'Contains predicted',
+        axis=1
     )
 
     print(df.head())
@@ -358,45 +377,249 @@ def inter_figure():
     differences = df['gliq_melting_temp'] - df['melting_point_k']
     rmse = np.sqrt(np.mean(differences**2))
     mae = np.mean(np.abs(differences))
+    mape = np.mean(np.abs(differences / df['melting_point_k'])) * 100
     std_dev = np.std(differences)
     print(f"Average RMSE between interpolated and MPDS values: {rmse:.2f} K")
     print(f"Average MAE between interpolated and MPDS values: {mae:.2f} K")
+    print(f"Average MAPE between interpolated and MPDS values: {mape:.2f}%")
     print(f"Standard deviation of differences: {std_dev:.2f} K")
+
+    for label, subset in [('All fitted', df[~df['contains_pred']]),
+                          ('Contains predicted', df[df['contains_pred']])]:
+        subset_differences = subset['gliq_melting_temp'] - subset['melting_point_k']
+        subset_mae = np.mean(np.abs(subset_differences))
+        subset_mape = np.mean(np.abs(subset_differences / subset['melting_point_k'])) * 100
+        print(f"{label} MAE: {subset_mae:.2f} K; MAPE: {subset_mape:.2f}%")
+
+    def add_compound_labels(ax, plot_df):
+        label_df = plot_df.dropna(subset=['melting_point_k', 'gliq_melting_temp', 'reduced_formula']).copy()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        label_df = label_df[
+            label_df['melting_point_k'].between(*sorted(xlim))
+            & label_df['gliq_melting_temp'].between(*sorted(ylim))
+        ].copy()
+        if len(label_df) == 0:
+            return
+
+        x_span = max(abs(xlim[1] - xlim[0]), 1.0)
+        y_span = max(abs(ylim[1] - ylim[0]), 1.0)
+        label_df['abs_error'] = (label_df['gliq_melting_temp'] - label_df['melting_point_k']).abs()
+        label_df['_nx'] = (label_df['melting_point_k'] - xlim[0]) / x_span
+        label_df['_ny'] = (label_df['gliq_melting_temp'] - ylim[0]) / y_span
+        label_df['_near_fit'] = label_df['abs_error'] / np.sqrt(x_span ** 2 + y_span ** 2)
+        norm_points_by_index = {
+            idx: np.array([row['_nx'], row['_ny']])
+            for idx, row in label_df.iterrows()
+        }
+
+        near_fit_candidate_count = min(max(LABEL_NEAR_FIT_MIN_COUNT * 3, LABEL_MAX_COUNT // 3), len(label_df))
+        near_fit_df = label_df.sort_values('_near_fit', ascending=True).head(near_fit_candidate_count)
+        high_error_df = label_df.sort_values('abs_error', ascending=False).head(LABEL_MAX_COUNT)
+        first_near_fit_count = min(LABEL_NEAR_FIT_MIN_COUNT * 2, len(near_fit_df))
+        selected_df = pd.concat([
+            near_fit_df.head(first_near_fit_count),
+            high_error_df,
+            near_fit_df.iloc[first_near_fit_count:],
+        ])
+        selected_df = selected_df[~selected_df.index.duplicated()]
+        near_fit_candidate_indices = set(near_fit_df.index)
+        selected = [row for _, row in selected_df.iterrows()]
+
+        if len(selected) == 0:
+            return
+
+        def box_tuple(bbox):
+            return bbox.x0, bbox.y0, bbox.x1, bbox.y1
+
+        def boxes_overlap(a, b, pad=2):
+            return not (a[2] + pad < b[0] or b[2] + pad < a[0] or a[3] + pad < b[1] or b[3] + pad < a[1])
+
+        def box_contains(box, point):
+            return box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3]
+
+        def segment_intersects(a, b, c, d):
+            def orientation(p, q, r):
+                return (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+
+            def on_segment(p, q, r):
+                return (
+                    min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
+                    and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
+                )
+
+            o1 = orientation(a, b, c)
+            o2 = orientation(a, b, d)
+            o3 = orientation(c, d, a)
+            o4 = orientation(c, d, b)
+            if o1 * o2 < 0 and o3 * o4 < 0:
+                return True
+            return (
+                abs(o1) < 1e-9 and on_segment(a, c, b)
+                or abs(o2) < 1e-9 and on_segment(a, d, b)
+                or abs(o3) < 1e-9 and on_segment(c, a, d)
+                or abs(o4) < 1e-9 and on_segment(c, b, d)
+            )
+
+        def segments_cross(a, b, c, d, margin=1e-3):
+            r = np.array(b) - np.array(a)
+            s = np.array(d) - np.array(c)
+            denom = r[0] * s[1] - r[1] * s[0]
+            if abs(denom) < 1e-9:
+                return False
+            diff = np.array(c) - np.array(a)
+            t = (diff[0] * s[1] - diff[1] * s[0]) / denom
+            u = (diff[0] * r[1] - diff[1] * r[0]) / denom
+            return margin < t < 1 - margin and margin < u < 1 - margin
+
+        def segment_intersects_box(segment, box):
+            a, b = segment
+            if box_contains(box, a) or box_contains(box, b):
+                return True
+            corners = [(box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3])]
+            edges = list(zip(corners, corners[1:] + corners[:1]))
+            return any(segment_intersects(a, b, c, d) for c, d in edges)
+
+        fig = ax.figure
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        axes_box = box_tuple(ax.get_window_extent(renderer))
+        marker_points = ax.transData.transform(
+            label_df[['melting_point_k', 'gliq_melting_temp']].astype(float).to_numpy()
+        )
+        marker_boxes = [(x - 10, y - 10, x + 10, y + 10) for x, y in marker_points]
+        marker_box_by_index = dict(zip(label_df.index, marker_boxes))
+        ref_min = max(min(xlim), min(ylim))
+        ref_max = min(max(xlim), max(ylim))
+        reference_segments = []
+        if ref_min < ref_max:
+            ref_disp = ax.transData.transform([(ref_min, ref_min), (ref_max, ref_max)])
+            reference_segments.append((tuple(ref_disp[0]), tuple(ref_disp[1])))
+        accepted_boxes = []
+        accepted_segments = []
+        direct_label_points = []
+        accepted_count = 0
+        accepted_near_fit_count = 0
+        direct_offsets = [
+            (12, 0, False), (-12, 0, False), (0, 12, False), (0, -12, False),
+            (8, 0, False), (-8, 0, False), (0, 8, False), (0, -8, False),
+        ]
+        connector_offsets = [
+            (-72, 48, True), (72, -48, True), (-72, -48, True), (72, 48, True),
+            (-88, 0, True), (88, 0, True), (0, 62, True), (0, -62, True),
+            (34, 20, True), (34, -20, True), (-34, 20, True), (-34, -20, True),
+            (48, 0, True), (-48, 0, True), (18, 36, True), (18, -36, True),
+            (-18, 36, True), (-18, -36, True),
+        ]
+
+        for row in selected:
+            if accepted_count >= LABEL_MAX_COUNT and accepted_near_fit_count >= LABEL_NEAR_FIT_MIN_COUNT:
+                break
+            if accepted_count >= LABEL_MAX_COUNT and row.name not in near_fit_candidate_indices:
+                continue
+
+            point_data = (row['melting_point_k'], row['gliq_melting_temp'])
+            point_disp = ax.transData.transform(point_data)
+            own_marker_box = marker_box_by_index[row.name]
+            other_marker_boxes = [box for idx, box in marker_box_by_index.items() if idx != row.name]
+            point = norm_points_by_index[row.name]
+            other_norm_points = [point for idx, point in norm_points_by_index.items() if idx != row.name]
+            nearest_neighbor = min(
+                (np.linalg.norm(point - other) for other in other_norm_points),
+                default=np.inf
+            )
+            allow_direct_label = all(np.linalg.norm(point - other) >= LABEL_MIN_SPACING for other in direct_label_points)
+            prefer_connector = row['_near_fit'] < LABEL_CONNECTOR_NEIGHBOR_RADIUS and nearest_neighbor < LABEL_CONNECTOR_NEIGHBOR_RADIUS
+            point_offsets = (
+                connector_offsets + (direct_offsets if allow_direct_label else [])
+                if prefer_connector
+                else (direct_offsets if allow_direct_label else []) + connector_offsets
+            )
+
+            for dx_pt, dy_pt, use_connector in point_offsets:
+                offset_disp = np.array([dx_pt, dy_pt]) * fig.dpi / 72.0
+                text_disp = point_disp + offset_disp
+                text_data = ax.transData.inverted().transform(text_disp)
+                text = ax.text(
+                    text_data[0],
+                    text_data[1],
+                    str(row['reduced_formula']),
+                    fontsize=LABEL_FONT_SIZE,
+                    fontweight='bold',
+                    ha='left' if dx_pt > 0 else 'right' if dx_pt < 0 else 'center',
+                    va='bottom' if dy_pt > 0 else 'top' if dy_pt < 0 else 'center',
+                    zorder=5
+                )
+                fig.canvas.draw()
+                text_box = box_tuple(text.get_window_extent(renderer).expanded(1.08, 1.15))
+                segment = (tuple(point_disp), tuple(text_disp)) if use_connector else None
+                clean = not any(boxes_overlap(text_box, box) for box in accepted_boxes + other_marker_boxes)
+                clean = clean and not boxes_overlap(text_box, own_marker_box, pad=-2)
+                clean = clean and not any(not (axes_box[0] <= text_box[i] <= axes_box[2]) for i in [0, 2])
+                clean = clean and not any(not (axes_box[1] <= text_box[i] <= axes_box[3]) for i in [1, 3])
+
+                if segment is not None:
+                    blocked_segments = accepted_segments + reference_segments
+                    clean = clean and not any(segments_cross(segment[0], segment[1], other[0], other[1]) for other in blocked_segments)
+                    clean = clean and not any(segment_intersects_box(segment, box) for box in accepted_boxes + other_marker_boxes)
+
+                if clean:
+                    accepted_boxes.append(text_box)
+                    accepted_count += 1
+                    if row.name in near_fit_candidate_indices:
+                        accepted_near_fit_count += 1
+                    if not use_connector:
+                        direct_label_points.append(point)
+                    if segment is not None:
+                        accepted_segments.append(segment)
+                        ax.annotate(
+                            '',
+                            xy=point_data,
+                            xytext=text_data,
+                            arrowprops=dict(arrowstyle='-', color=LABEL_CONNECTOR_COLOR, lw=0.8),
+                            zorder=4
+                        )
+                    break
+
+                text.remove()
     
     # Color mapping
-    colors = {'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'}
-    df['color'] = df['type'].map(colors)
+    colors = {False: 'tab:blue', True: 'tab:orange'}
+    if COLOR_BY_FIT_TYPE:
+        df['color'] = df['contains_pred'].map(colors)
+    elif COLOR_BY_CONGRUENCY:
+        df['color'] = df['type'].map({'congruent': 'tab:cyan', 'non-congruent': 'tab:orange'})
+    else:
+        df['color'] = SINGLE_MARKER_COLOR
 
     # Create the scatter plot
     # plt.figure(figsize=(15, 4))
     plt.figure(figsize=(8, 6))
     
-    # Plot points with different edge colors based on fit type
-    for fit_type in [False, True]:  # Plot non-fitted first, then fitted (so fitted are on top)
+    # Plot all-fitted systems first, then systems containing predicted parameters
+    for fit_type in [False, True]:
         subset = df[df['contains_pred'] == fit_type]
         if len(subset) > 0:
-            edge_color = 'black' if fit_type else 'none'
-            edge_width = 2 if fit_type else 0
             plt.scatter(
                 subset['melting_point_k'],
                 subset['gliq_melting_temp'],
                 c=subset['color'],
                 s=80,  # Adjust marker size here (default is 20)
-                edgecolors=edge_color,
-                linewidths=edge_width
+                edgecolors='none',
+                linewidths=0,
+                label=('Contains predicted binaries' if fit_type else 'All fitted binaries') if COLOR_BY_FIT_TYPE else None
             )
-
-    # Toggle label by commenting/uncommenting
-    texts = []
-    for _, row in df.iterrows():
-        texts.append(plt.text(row['melting_point_k'] + 5, row['gliq_melting_temp'], row['reduced_formula'], fontsize=8))
-    # Adjust text to reduce overlaps
-    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
 
     # Plot the reference y=x line
     min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
     max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max())
     plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
+
+    if SHOW_LINEAR_FIT:
+        slope, intercept = np.polyfit(df['melting_point_k'], df['gliq_melting_temp'], 1)
+        fit_x = np.array([df['melting_point_k'].min(), df['melting_point_k'].max()])
+        plt.plot(fit_x, slope * fit_x + intercept, 'r--',
+                 label=f'Linear fit: y = {slope:.2f}x {intercept:+.0f}')
 
     
     # Axis labels (bold, using variables defined at top of function)
@@ -411,15 +634,21 @@ def inter_figure():
 
     # modify x-axis limits
     # plt.xlim(min_val, max_val - 150)
-    plt.xlim(850, 2500)
-    plt.ylim(850, 2500)
+    plt.xlim(750, 2700)
+    plt.ylim(750, 2700)
 
     # plt.xlim(500, 2500)
     # plt.ylim(500, 2500)
 
-    # # Custom legend for congruency
+    if SHOW_COMPOUND_LABELS:
+        add_compound_labels(ax, df)
+
+    if COLOR_BY_FIT_TYPE or SHOW_LINEAR_FIT:
+        plt.legend()
+
+    # # Custom legend for marker colors
     # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
-    #            for label, color in colors.items()]
+    #            for label, color in (colors.items() if COLOR_BY_CONGRUENCY else [('all', SINGLE_MARKER_COLOR)])]
     # handles.append(plt.Line2D([], [], linestyle='--', color='k', label='y = x'))
     # plt.legend(handles=handles)
 
@@ -446,7 +675,7 @@ def inter_figure_filtered():
     
     # Check if system has "Contains predicted" fit type
     df['contains_pred'] = df['system_key'].apply(
-        lambda x: meta_data.get(x, {}).get('Fit Type') == 'Contains predicted'
+        lambda x: meta_data.get(x, {}).get('Fit Type') == 'Contains predicted binaries'
     )
 
     # Filter out points that would have black edges (Contains predicted)

@@ -7,3 +7,5 @@ all_dumps/
 .vscode/
 scripts/ternary_interpolation/test_output/
 scripts/ternary_interpolation/auth.py
+.reagent/
+inter_figure_label_check.png

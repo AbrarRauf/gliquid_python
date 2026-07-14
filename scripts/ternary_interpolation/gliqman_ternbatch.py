@@ -8,7 +8,7 @@ import numpy as np
 import ast
 from collections import Counter
 
-dump_dir = "all_dumps/gliq_manu_diagnose1/"
+dump_dir = "all_dumps/gliq_manu_forreal_plusML/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -53,9 +53,9 @@ def main():
     interp = "linear"
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v22.02-XGB-S-500.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered_IQR.xlsx")
 
     required_ternary_cols = {"elements", "melting_point_k", "reduced_formula"}
@@ -193,20 +193,24 @@ def main():
                     fitorpred[bin_sys] = "fit"
                     mae.append(params["mae"])
                     rmse.append(params["rmse"])
+                elif bin_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
+                elif flipped_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                    mae.append(params["mae"])
+                    rmse.append(params["rmse"])
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
                 if pd.isna(params["mae"]) or pd.isna(params["rmse"]):
                     raise ValueError(f"Binary system {bin_sys} has missing mae/rmse metrics.")
 
-                # elif bin_sys in binary_param_pred_df['system'].tolist():
-                #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-                #     fitorpred[bin_sys] = "pred"
-                #     pred_tag = "Contains predicted"
-                # elif flipped_sys in binary_param_pred_df['system'].tolist():
-                #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-                #     fitorpred[bin_sys] = "pred"
-                #     pred_tag = "Contains predicted"
                 # else:
                 #     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 

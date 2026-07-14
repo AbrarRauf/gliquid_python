@@ -218,6 +218,12 @@ class HSX:
             fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines+text', marker=dict(color=entry['marker']['color']),
                                      name=entry['text']))
 
+        fig.update_traces(
+            selector=dict(type='mesh3d'),
+            lighting=dict(ambient=0.35, diffuse=0.8, specular=0.25, roughness=0.55, fresnel=0.1),
+            lightposition=dict(x=100, y=200, z=300)
+        )
+
         # Update layout and labels
         fig.update_layout(
             scene=dict(xaxis_title='X', yaxis_title='S [J/mol/K]', zaxis_title='H [J/mol]'),
