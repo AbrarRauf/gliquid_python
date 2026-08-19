@@ -8,9 +8,9 @@ import numpy as np
 import ast
 # from scipy.optimize import minimize_scalar, brentq
 
-dump_dir = "all_dumps/gliq_manu_forreal/"
+dump_dir = "all_dumps/gliq_manu_forreal_plusML/"
 meta_doc = dump_dir + "ternary_Gliq_meta_final_linear.json"
-final_dir = "all_dumps/gliq_manu_forreal_correction/"
+final_dir = "all_dumps/gliq_manu_forreal_plusML_correction/"
 read_dir = "all_dumps/binary_fits/"
 print(data_dir)
 
@@ -283,7 +283,9 @@ def build_optimization_summary(results_df, skipped_count):
         "Optimized l0 ternary summary",
         "=" * 30,
         f"Total systems processed: {len(results_df)}",
-        f"Skipped (not 'All fitted'): {skipped_count}",
+        f"All fitted systems processed: {(results_df['fit_type'] == 'All fitted').sum()}",
+        f"Systems containing predicted binaries processed: {(results_df['fit_type'] == 'Contains predicted').sum()}",
+        f"Skipped (missing or unsupported metadata): {skipped_count}",
         f"Successful (<=10K error): {len(successful)}",
         f"Partial success (>10K error): {len(partial)}",
         f"Failed: {len(failed)}",
@@ -316,11 +318,11 @@ def main_optimize():
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v22.02-XGB-S-500.xlsx")
     # ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear_updated.xlsx")
     ternary_df = pd.read_excel(dump_dir + "ternary_Gliq_mps_final_linear.xlsx")
     
-    # Load metadata to filter for "All fitted" systems only
+    # Load metadata to identify each system's binary-parameter source.
     if not os.path.exists(meta_doc):
         print(f"WARNING: Metadata file not found at {meta_doc}")
         print("Proceeding without metadata filtering...")
@@ -377,17 +379,19 @@ def main_optimize():
         initial_gliq_temp = row["gliq_melting_temp"]
         initial_delta_T = initial_gliq_temp - actual_temp
         
-        # Check if this system is "All fitted" in metadata
+        # Check that metadata identifies a supported fitted/predicted parameter mix.
         sorted_sys = sorted(tern_sys)
         system_key = "-".join(sorted_sys)
+        pred_tag = "All fitted"
         
         if metadata_normalized:
             if system_key in metadata_normalized:
                 fit_type = metadata_normalized[system_key].get("Fit Type", "")
-                if fit_type != "All fitted":
-                    print(f"\nSkipping {congruent_phase} (system: {system_key}) - Fit Type: {fit_type}")
+                if fit_type not in {"All fitted", "Contains predicted"}:
+                    print(f"\nSkipping {congruent_phase} (system: {system_key}) - Unsupported Fit Type: {fit_type}")
                     skipped_count += 1
                     continue
+                pred_tag = fit_type
             else:
                 print(f"\nWARNING: System {system_key} not found in metadata, skipping...")
                 skipped_count += 1
@@ -410,7 +414,6 @@ def main_optimize():
             binary_L_dict = {}
             fitorpred = {}
 
-            pred_tag = "All fitted"
             mae = []
             rmse = []
             norm_mae = []
@@ -439,14 +442,22 @@ def main_optimize():
                     _append_metric_if_present(rmse, "rmse", params)
                     _append_metric_if_present(norm_mae, "norm_mae", params)
                     _append_metric_if_present(norm_rmse, "norm_rmse", params)
-                # elif bin_sys in binary_param_pred_df['system'].tolist():
-                #     params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
-                #     fitorpred[bin_sys] = "pred"
-                #     pred_tag = "Contains predicted"
-                # elif flipped_sys in binary_param_pred_df['system'].tolist():
-                #     params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
-                #     fitorpred[bin_sys] = "pred"
-                #     pred_tag = "Contains predicted"
+                elif bin_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == bin_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                    _append_metric_if_present(mae, "mae", params)
+                    _append_metric_if_present(rmse, "rmse", params)
+                    _append_metric_if_present(norm_mae, "norm_mae", params)
+                    _append_metric_if_present(norm_rmse, "norm_rmse", params)
+                elif flipped_sys in binary_param_pred_df['system'].tolist():
+                    params = binary_param_pred_df[binary_param_pred_df['system'] == flipped_sys].iloc[0]
+                    fitorpred[bin_sys] = "pred"
+                    pred_tag = "Contains predicted"
+                    _append_metric_if_present(mae, "mae", params)
+                    _append_metric_if_present(rmse, "rmse", params)
+                    _append_metric_if_present(norm_mae, "norm_mae", params)
+                    _append_metric_if_present(norm_rmse, "norm_rmse", params)
                 else:
                     raise ValueError(f"Binary system {bin_sys} not found in the parameter dataframe.")
 
@@ -479,6 +490,7 @@ def main_optimize():
             result = {
                 'reduced_formula': congruent_phase,
                 'elements': str(tern_sys),
+                'fit_type': pred_tag,
                 'melting_point_k': actual_temp,
                 'initial_gliq_temp': initial_gliq_temp,
                 'final_gliq_temp': final_temp if final_temp is not None else np.nan,
@@ -503,6 +515,7 @@ def main_optimize():
             result = {
                 'reduced_formula': congruent_phase,
                 'elements': str(tern_sys),
+                'fit_type': pred_tag,
                 'melting_point_k': actual_temp,
                 'initial_gliq_temp': initial_gliq_temp,
                 'final_gliq_temp': np.nan,
@@ -519,6 +532,7 @@ def main_optimize():
     results_columns = [
         'reduced_formula',
         'elements',
+        'fit_type',
         'melting_point_k',
         'initial_gliq_temp',
         'final_gliq_temp',
@@ -588,8 +602,8 @@ def main_post():
     print(f"Total systems to plot: {len(results_df)}")
     
     # Load binary parameter data
-    binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.25-filtered.xlsx")
-    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/final_ml_params-internal.xlsx")
+    binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
+    binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v22.02-XGB-S-500.xlsx")
     
     success_count = 0
     error_count = 0

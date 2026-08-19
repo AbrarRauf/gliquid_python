@@ -6,6 +6,7 @@ import plotly.express as px
 import numpy as np
 from adjustText import adjust_text
 import json
+import re
 
 def eutectic_fig():
     # eut_path = "all_dumps/gliq_manu_test_eut/ternary_eutectic_results_og.xlsx"
@@ -314,14 +315,16 @@ def inter_figure_raw():
 
 def inter_figure(): 
     # Font settings - change these to customize appearance
-    TICK_LABEL_SIZE = 12  # Change this to resize tick labels
-    AXIS_LABEL_SIZE = 12  # Change this to resize axis labels
+    TICK_LABEL_SIZE = 15
+    AXIS_LABEL_SIZE = 15
+    LABEL_FONT_SIZE = 10
+    AXIS_BORDER_WIDTH = 1.0
+    LEGEND_FONT_SIZE = 14
     COLOR_BY_FIT_TYPE = True
     COLOR_BY_CONGRUENCY = False
-    SHOW_LINEAR_FIT = True
+    SHOW_LINEAR_FIT = False
     SINGLE_MARKER_COLOR = 'tab:blue'
     SHOW_COMPOUND_LABELS = True
-    LABEL_FONT_SIZE = 8
     LABEL_MAX_COUNT = 18
     LABEL_NEAR_FIT_MIN_COUNT = 5
     LABEL_MIN_SPACING = 0.03
@@ -371,7 +374,9 @@ def inter_figure():
     # count the number of rows that are congruent and non-congruent under column name "type"
     print(df['type'].value_counts())
 
-    print(len(df))
+    print(f"Total ternaries: {len(df)}")
+    print(f"All fitted ternaries: {(~df['contains_pred']).sum()}")
+    print(f"Ternaries containing predicted binaries: {df['contains_pred'].sum()}")
     
     # Calculate and print RMSE between interpolated and MPDS values
     differences = df['gliq_melting_temp'] - df['melting_point_k']
@@ -392,6 +397,9 @@ def inter_figure():
         print(f"{label} MAE: {subset_mae:.2f} K; MAPE: {subset_mape:.2f}%")
 
     def add_compound_labels(ax, plot_df):
+        def format_formula(formula):
+            return re.sub(r'(\d+)', r'$_{\1}$', str(formula))
+
         label_df = plot_df.dropna(subset=['melting_point_k', 'gliq_melting_temp', 'reduced_formula']).copy()
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
@@ -535,15 +543,16 @@ def inter_figure():
                 if prefer_connector
                 else (direct_offsets if allow_direct_label else []) + connector_offsets
             )
+            point_offsets = [(*offset, False) for offset in point_offsets] + [(*offset, True) for offset in connector_offsets]
 
-            for dx_pt, dy_pt, use_connector in point_offsets:
+            for dx_pt, dy_pt, use_connector, allow_reference_crossing in point_offsets:
                 offset_disp = np.array([dx_pt, dy_pt]) * fig.dpi / 72.0
                 text_disp = point_disp + offset_disp
                 text_data = ax.transData.inverted().transform(text_disp)
                 text = ax.text(
                     text_data[0],
                     text_data[1],
-                    str(row['reduced_formula']),
+                    format_formula(row['reduced_formula']),
                     fontsize=LABEL_FONT_SIZE,
                     fontweight='bold',
                     ha='left' if dx_pt > 0 else 'right' if dx_pt < 0 else 'center',
@@ -557,9 +566,10 @@ def inter_figure():
                 clean = clean and not boxes_overlap(text_box, own_marker_box, pad=-2)
                 clean = clean and not any(not (axes_box[0] <= text_box[i] <= axes_box[2]) for i in [0, 2])
                 clean = clean and not any(not (axes_box[1] <= text_box[i] <= axes_box[3]) for i in [1, 3])
+                clean = clean and not any(segment_intersects_box(other, text_box) for other in accepted_segments + reference_segments)
 
                 if segment is not None:
-                    blocked_segments = accepted_segments + reference_segments
+                    blocked_segments = accepted_segments if allow_reference_crossing else accepted_segments + reference_segments
                     clean = clean and not any(segments_cross(segment[0], segment[1], other[0], other[1]) for other in blocked_segments)
                     clean = clean and not any(segment_intersects_box(segment, box) for box in accepted_boxes + other_marker_boxes)
 
@@ -611,9 +621,12 @@ def inter_figure():
             )
 
     # Plot the reference y=x line
-    min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
-    max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max())
-    plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
+    # min_val = min(df['melting_point_k'].min(), df['gliq_melting_temp'].min())
+    # max_val = max(df['melting_point_k'].max(), df['gliq_melting_temp'].max())
+    min_val = 775
+    max_val = 2575
+    # plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='y = x')
+    plt.plot([min_val, max_val], [min_val, max_val], 'k--',)
 
     if SHOW_LINEAR_FIT:
         slope, intercept = np.polyfit(df['melting_point_k'], df['gliq_melting_temp'], 1)
@@ -629,13 +642,15 @@ def inter_figure():
     # Tick labels (bold, using variable defined at top of function)
     plt.tick_params(axis='both', which='major', labelsize=TICK_LABEL_SIZE)
     ax = plt.gca()
+    for spine in ax.spines.values():
+        spine.set_linewidth(AXIS_BORDER_WIDTH)
     for label in ax.get_xticklabels() + ax.get_yticklabels():
         label.set_fontweight('bold')
 
     # modify x-axis limits
     # plt.xlim(min_val, max_val - 150)
-    plt.xlim(750, 2700)
-    plt.ylim(750, 2700)
+    plt.xlim(750, 2600)
+    plt.ylim(750, 2600)
 
     # plt.xlim(500, 2500)
     # plt.ylim(500, 2500)
@@ -644,7 +659,7 @@ def inter_figure():
         add_compound_labels(ax, df)
 
     if COLOR_BY_FIT_TYPE or SHOW_LINEAR_FIT:
-        plt.legend()
+        plt.legend(fontsize=LEGEND_FONT_SIZE)
 
     # # Custom legend for marker colors
     # handles = [plt.Line2D([], [], marker='o', linestyle='', color=color, label=label)
@@ -654,6 +669,8 @@ def inter_figure():
 
     # plt.grid(True)
     plt.tight_layout()
+    plt.savefig('figures/inter_figure.png', dpi=300, bbox_inches='tight')
+    plt.savefig('figures/inter_figure.svg', dpi=300, bbox_inches='tight')
     plt.show()
 
 
@@ -751,7 +768,7 @@ def inter_figure_filtered():
     plt.show()
 
 def inter_figure_correction():
-    inter_path = "all_dumps/gliq_manu_forreal_correction/optimized_l0_tern_results.xlsx"
+    inter_path = "all_dumps/gliq_manu_forreal_plusML_correction/optimized_l0_tern_results.xlsx"
     
     # Load the optimization results
     df = pd.read_excel(inter_path)
@@ -1423,10 +1440,10 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 def main():
     # eutectic_fig()
-    inter_figure()
+    # inter_figure()
     # inter_figure_raw()
     # inter_figure_filtered()
-    # inter_figure_correction()
+    inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis

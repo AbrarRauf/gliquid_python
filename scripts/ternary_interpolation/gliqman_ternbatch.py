@@ -54,7 +54,6 @@ def main():
 
     # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_comb_exp_with_soft_LE_10_opts-merged-hard_filtered-60elt-matrix.xlsx")
     binary_param_df = pd.read_excel("data/ternary_dft_data/tau_penalty_s0.005_p8.5_med_sc-filtered-matrix.xlsx")
-    # binary_param_df = pd.read_excel("data/ternary_dft_data/multi_fit_no1S_nmae_lt_0.5.xlsx")
     binary_param_pred_df = pd.read_excel("data/ternary_dft_data/v22.02-XGB-S-500.xlsx")
     ternary_df = pd.read_excel("data/ternary_dft_data/ternary_im_filtered_IQR.xlsx")
 
