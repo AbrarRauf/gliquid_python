@@ -880,6 +880,166 @@ class ternary_gtx_plotter(ternary_interpolation):
             'figure': fig,
         }
 
+    def plot_free_energy_slice(self, T_celsius: float, show_composition_triangle: bool = False):
+        """Plot the liquid free-energy surface and equilibrium lower hull at one temperature."""
+        result = self.extract_single_hull_at_T(T_celsius)
+        slice_df = result['raw_slice_df']
+        points = result['hull_points']
+        simplices = result['hull_simplices']
+        transformed_df = result['transformed_points_df']
+        energies = points[:, 2] / 1000
+        liquid_mask = slice_df['Phase'].eq('L').to_numpy()
+        liquid_df = transformed_df.loc[liquid_mask].reset_index(drop=True)
+        liquid_raw = slice_df.loc[liquid_mask].reset_index(drop=True)
+        liquid_energies = energies[liquid_mask]
+        liquid_triangles = Delaunay(liquid_df[['x0', 'x1']]).simplices
+        projected = transformed_df[['x0', 'x1']].to_numpy()[simplices]
+        edge_a, edge_b = projected[:, 1] - projected[:, 0], projected[:, 2] - projected[:, 0]
+        projected_twice_area = np.abs(edge_a[:, 0] * edge_b[:, 1] - edge_a[:, 1] * edge_b[:, 0])
+        has_solid = np.array([any(slice_df.iloc[index]['Phase'] != 'L' for index in simplex) for simplex in simplices])
+        hull_simplices = simplices[has_solid & (projected_twice_area > 1e-10)]
+
+        fig = go.Figure()
+        fig.add_trace(go.Mesh3d(
+            x=liquid_df['x0'], y=liquid_df['x1'], z=liquid_energies,
+            i=liquid_triangles[:, 0], j=liquid_triangles[:, 1], k=liquid_triangles[:, 2],
+            intensity=liquid_energies, colorscale='Magma', opacity=0.60,
+            colorbar=dict(title='G (kJ/mol)'), name='Liquid free energy',
+            customdata=np.column_stack((liquid_raw['x0'], liquid_raw['x1'])),
+            hovertemplate=(
+                '<b>Liquid free energy</b><br>' +
+                f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                'G: %{z:.3f} kJ/mol<extra></extra>'
+            )
+        ))
+
+        if hull_simplices.size:
+            fig.add_trace(go.Mesh3d(
+                x=transformed_df['x0'], y=transformed_df['x1'], z=energies,
+                i=hull_simplices[:, 0], j=hull_simplices[:, 1], k=hull_simplices[:, 2],
+                color='#A7ADB7', opacity=0.1, flatshading=True,
+                name='Equilibrium solid/tie facets', hoverinfo='skip'
+            ))
+
+            edges = sorted({
+                tuple(sorted(edge))
+                for simplex in hull_simplices
+                for edge in ((simplex[0], simplex[1]), (simplex[1], simplex[2]), (simplex[2], simplex[0]))
+            })
+            edge_x, edge_y, edge_z = [], [], []
+            for start, end in edges:
+                edge_x.extend((transformed_df.iloc[start]['x0'], transformed_df.iloc[end]['x0'], None))
+                edge_y.extend((transformed_df.iloc[start]['x1'], transformed_df.iloc[end]['x1'], None))
+                edge_z.extend((energies[start], energies[end], None))
+            fig.add_trace(go.Scatter3d(
+                x=edge_x, y=edge_y, z=edge_z, mode='lines',
+                line=dict(color='#30343B', width=2), name='Equilibrium hull edges',
+                hoverinfo='skip'
+            ))
+
+        solid_indices = np.flatnonzero(~liquid_mask)
+        hull_indices = np.unique(simplices)
+        solid_groups = (
+            (solid_indices[np.isin(solid_indices, hull_indices)], 'Solid phases (on lower hull)', '#F4D35E'),
+            (solid_indices[~np.isin(solid_indices, hull_indices)], 'Solid phases (off lower hull)', '#4EA8DE'),
+        )
+        for group_indices, group_name, group_color in solid_groups:
+            if not group_indices.size:
+                continue
+            solids = slice_df.iloc[group_indices]
+            solid_points = transformed_df.iloc[group_indices]
+            fig.add_trace(go.Scatter3d(
+                x=solid_points['x0'], y=solid_points['x1'], z=energies[group_indices],
+                mode='markers+text', text=solids['Phase'], textposition='top center',
+                marker=dict(size=5, color=group_color, line=dict(color='#30343B', width=1)),
+                name=group_name,
+                customdata=np.column_stack((solids['x0'], solids['x1'], solids['Phase'])),
+                hovertemplate=(
+                    '<b>%{customdata[2]}</b><br>' +
+                    f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                    f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                    'G: %{z:.3f} kJ/mol<extra></extra>'
+                )
+            ))
+
+        if show_composition_triangle:
+            g_floor = float(np.min(energies))
+            fig.add_trace(go.Scatter3d(
+                x=[0, 0.5, 1, 0], y=[0, np.sqrt(3) / 2, 0, 0],
+                z=[g_floor] * 4, mode='lines', line=dict(color='black', width=5),
+                showlegend=False, hoverinfo='skip'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=[-0.02, 0.48, 0.98], y=[0.02, np.sqrt(3) / 2 + 0.02, 0.02],
+                z=[g_floor] * 3, mode='text',
+                text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
+                showlegend=False, hoverinfo='skip'
+            ))
+        fig.update_layout(
+            title=f"Liquid free energy and equilibrium hull at T = {result['temperature_c']:.2f} C",
+            scene=dict(
+                xaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False, visible=False),
+                yaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False, visible=False),
+                zaxis=dict(title='G (kJ/mol)', visible=False), bgcolor='white',
+                aspectmode='manual', aspectratio=dict(x=1, y=0.9, z=0.45),
+                camera=dict(projection=dict(type='orthographic'))
+            ),
+            margin=dict(l=40, r=40, b=40, t=60),
+            legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top')
+        )
+        return {**result, 'figure': fig}
+
+    def add_temperature_isoline(self, fig, T_celsius: float):
+        """Add one highlighted isotherm to a figure returned by plot_ternary."""
+        if not hasattr(self, 'liq_plotting_df') or not hasattr(self, 'triangulation'):
+            raise ValueError("Run plot_ternary() before adding a temperature isoline.")
+
+        if not hasattr(self, 'T_grid') or len(self.T_grid) == 0:
+            raise ValueError("Temperature grid is empty. Run initialization before adding an isoline.")
+        T_kelvin = float(self.T_grid[np.argmin(np.abs(self.T_grid - (float(T_celsius) + 273.15)))])
+        T_celsius = T_kelvin - 273.15
+
+        liquid_points = np.array(list(zip(
+            self.liq_plotting_df['x0'], self.liq_plotting_df['x1'], self.liq_plotting_df['T']
+        )))
+        temp_min, temp_max = np.min(liquid_points[:, 2]), np.max(liquid_points[:, 2])
+        if not temp_min <= T_celsius <= temp_max:
+            raise ValueError(
+                f"T={T_celsius:.2f} C does not intersect the liquidus surface "
+                f"({temp_min:.2f} to {temp_max:.2f} C)."
+            )
+
+        segments = []
+        for triangle in self.triangulation.simplices:
+            vertices = liquid_points[triangle]
+            intersections = []
+            for start, end in ((vertices[0], vertices[1]), (vertices[1], vertices[2]), (vertices[2], vertices[0])):
+                t_start, t_end = start[2], end[2]
+                if (t_start <= T_celsius <= t_end) or (t_end <= T_celsius <= t_start):
+                    if abs(t_end - t_start) > 1e-8:
+                        point = start + (T_celsius - t_start) / (t_end - t_start) * (end - start)
+                        point[2] = T_celsius
+                        if not any(np.linalg.norm(point[:2] - saved[:2]) < 1e-8 for saved in intersections):
+                            intersections.append(point)
+            if len(intersections) == 2:
+                segments.append(intersections)
+
+        contours = self._connect_line_segments(segments)
+        if not contours:
+            raise ValueError(f"No liquidus isoline was found at T={T_celsius:.2f} C.")
+
+        for index, contour in enumerate(contours):
+            fig.add_trace(go.Scatter3d(
+                x=[point[0] for point in contour],
+                y=[point[1] for point in contour],
+                z=[point[2] for point in contour],
+                mode='lines', line=dict(color='black', width=8),
+                name=f'{T_celsius:.2f} C energy slice', showlegend=index == 0,
+                hovertemplate=f'<b>Energy slice: {T_celsius:.2f} C</b><extra></extra>'
+            ))
+        return fig
+
     def _add_isothermal_lines(self, fig, liq_points, triangles):
         """
         Add iso-temperature contour lines to the 3D liquidus surface.

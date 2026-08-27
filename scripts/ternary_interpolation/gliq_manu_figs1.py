@@ -1439,11 +1439,11 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    # eutectic_fig()
+    eutectic_fig()
     # inter_figure()
     # inter_figure_raw()
     # inter_figure_filtered()
-    inter_figure_correction()
+    # inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis
