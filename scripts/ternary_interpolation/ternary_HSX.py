@@ -880,7 +880,11 @@ class ternary_gtx_plotter(ternary_interpolation):
             'figure': fig,
         }
 
-    def plot_free_energy_slice(self, T_celsius: float, show_composition_triangle: bool = False):
+    def plot_free_energy_slice(
+        self, T_celsius: float, show_composition_triangle: bool = False,
+        clip_liquid_to_lower_hull: bool = False, show_solid_labels: bool = True,
+        show_terminal_labels: bool = True
+    ):
         """Plot the liquid free-energy surface and equilibrium lower hull at one temperature."""
         result = self.extract_single_hull_at_T(T_celsius)
         slice_df = result['raw_slice_df']
@@ -892,27 +896,33 @@ class ternary_gtx_plotter(ternary_interpolation):
         liquid_df = transformed_df.loc[liquid_mask].reset_index(drop=True)
         liquid_raw = slice_df.loc[liquid_mask].reset_index(drop=True)
         liquid_energies = energies[liquid_mask]
-        liquid_triangles = Delaunay(liquid_df[['x0', 'x1']]).simplices
         projected = transformed_df[['x0', 'x1']].to_numpy()[simplices]
         edge_a, edge_b = projected[:, 1] - projected[:, 0], projected[:, 2] - projected[:, 0]
         projected_twice_area = np.abs(edge_a[:, 0] * edge_b[:, 1] - edge_a[:, 1] * edge_b[:, 0])
+        liquid_triangles = Delaunay(liquid_df[['x0', 'x1']]).simplices
+        if clip_liquid_to_lower_hull:
+            liquid_indices = np.flatnonzero(liquid_mask)
+            liquid_on_hull = np.isin(liquid_indices, np.unique(simplices))
+            liquid_triangles = liquid_triangles[np.all(liquid_on_hull[liquid_triangles], axis=1)]
         has_solid = np.array([any(slice_df.iloc[index]['Phase'] != 'L' for index in simplex) for simplex in simplices])
         hull_simplices = simplices[has_solid & (projected_twice_area > 1e-10)]
 
         fig = go.Figure()
-        fig.add_trace(go.Mesh3d(
-            x=liquid_df['x0'], y=liquid_df['x1'], z=liquid_energies,
-            i=liquid_triangles[:, 0], j=liquid_triangles[:, 1], k=liquid_triangles[:, 2],
-            intensity=liquid_energies, colorscale='Magma', opacity=0.60,
-            colorbar=dict(title='G (kJ/mol)'), name='Liquid free energy',
-            customdata=np.column_stack((liquid_raw['x0'], liquid_raw['x1'])),
-            hovertemplate=(
-                '<b>Liquid free energy</b><br>' +
-                f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
-                f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
-                'G: %{z:.3f} kJ/mol<extra></extra>'
-            )
-        ))
+        if liquid_triangles.size:
+            liquid_name = 'Liquid free energy (lower hull only)' if clip_liquid_to_lower_hull else 'Liquid free energy'
+            fig.add_trace(go.Mesh3d(
+                x=liquid_df['x0'], y=liquid_df['x1'], z=liquid_energies,
+                i=liquid_triangles[:, 0], j=liquid_triangles[:, 1], k=liquid_triangles[:, 2],
+                intensity=liquid_energies, colorscale='Magma', opacity=1.0,
+                colorbar=dict(title='G (kJ/mol)'), name=liquid_name,
+                customdata=np.column_stack((liquid_raw['x0'], liquid_raw['x1'])),
+                hovertemplate=(
+                    '<b>Liquid free energy</b><br>' +
+                    f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
+                    f'x_{self.tern_sys[2]}: %{{customdata[1]:.3f}}<br>' +
+                    'G: %{z:.3f} kJ/mol<extra></extra>'
+                )
+            ))
 
         if hull_simplices.size:
             fig.add_trace(go.Mesh3d(
@@ -935,6 +945,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             fig.add_trace(go.Scatter3d(
                 x=edge_x, y=edge_y, z=edge_z, mode='lines',
                 line=dict(color='#30343B', width=2), name='Equilibrium hull edges',
+                showlegend=False,
                 hoverinfo='skip'
             ))
 
@@ -944,17 +955,29 @@ class ternary_gtx_plotter(ternary_interpolation):
             (solid_indices[np.isin(solid_indices, hull_indices)], 'Solid phases (on lower hull)', '#F4D35E'),
             (solid_indices[~np.isin(solid_indices, hull_indices)], 'Solid phases (off lower hull)', '#4EA8DE'),
         )
+        solid_annotations = []
         for group_indices, group_name, group_color in solid_groups:
             if not group_indices.size:
                 continue
             solids = slice_df.iloc[group_indices]
             solid_points = transformed_df.iloc[group_indices]
+            solid_annotations.extend(
+                dict(
+                    x=transformed_df.iloc[index]['x0'], y=transformed_df.iloc[index]['x1'],
+                    z=energies[index], text=str(slice_df.iloc[index]['Phase']), showarrow=False,
+                    bgcolor='rgba(255,255,255,0.72)', bordercolor='rgba(48,52,59,0.25)',
+                    borderwidth=1, borderpad=2, font=dict(color='#243B5A', size=12),
+                    xanchor='center', yanchor='bottom'
+                )
+                for index in group_indices
+            )
             fig.add_trace(go.Scatter3d(
                 x=solid_points['x0'], y=solid_points['x1'], z=energies[group_indices],
-                mode='markers+text', text=solids['Phase'], textposition='top center',
+                mode='markers',
                 marker=dict(size=5, color=group_color, line=dict(color='#30343B', width=1)),
                 name=group_name,
                 customdata=np.column_stack((solids['x0'], solids['x1'], solids['Phase'])),
+                showlegend=False,
                 hovertemplate=(
                     '<b>%{customdata[2]}</b><br>' +
                     f'x_{self.tern_sys[1]}: %{{customdata[0]:.3f}}<br>' +
@@ -974,7 +997,7 @@ class ternary_gtx_plotter(ternary_interpolation):
                 x=[-0.02, 0.48, 0.98], y=[0.02, np.sqrt(3) / 2 + 0.02, 0.02],
                 z=[g_floor] * 3, mode='text',
                 text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
-                showlegend=False, hoverinfo='skip'
+                visible=show_terminal_labels, showlegend=False, hoverinfo='skip'
             ))
         fig.update_layout(
             title=f"Liquid free energy and equilibrium hull at T = {result['temperature_c']:.2f} C",
@@ -983,12 +1006,50 @@ class ternary_gtx_plotter(ternary_interpolation):
                 yaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False, visible=False),
                 zaxis=dict(title='G (kJ/mol)', visible=False), bgcolor='white',
                 aspectmode='manual', aspectratio=dict(x=1, y=0.9, z=0.45),
-                camera=dict(projection=dict(type='orthographic'))
+                camera=dict(projection=dict(type='orthographic')),
+                annotations=solid_annotations if show_solid_labels else []
             ),
             margin=dict(l=40, r=40, b=40, t=60),
             legend=dict(x=0.95, y=0.95, xanchor='left', yanchor='top')
         )
         return {**result, 'figure': fig}
+
+    @staticmethod
+    def save_free_energy_colorbar(energy_result, filename, orientation='horizontal', label_side='right'):
+        """Save a standalone colorbar matching a free-energy slice."""
+        import matplotlib.pyplot as plt
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+
+        if orientation not in {'horizontal', 'vertical'}:
+            raise ValueError("Colorbar orientation must be 'horizontal' or 'vertical'.")
+        liquid_mask = energy_result['raw_slice_df']['Phase'].eq('L').to_numpy()
+        liquid_energies = energy_result['hull_points'][liquid_mask, 2] / 1000
+        fig, ax = plt.subplots(figsize=(9, 1.6) if orientation == 'horizontal' else (1.6, 9))
+        mapper = ScalarMappable(
+            norm=Normalize(vmin=float(liquid_energies.min()), vmax=float(liquid_energies.max())),
+            cmap='magma'
+        )
+        mapper.set_array([])
+        colorbar = fig.colorbar(mapper, cax=ax, orientation=orientation)
+        colorbar.set_label('G (kJ/mol)', fontsize=20, fontweight='bold', labelpad=8)
+        colorbar.ax.tick_params(labelsize=18, width=1.5, length=6)
+        if orientation == 'vertical':
+            colorbar.ax.yaxis.set_ticks_position(label_side)
+            colorbar.ax.yaxis.set_label_position(label_side)
+        tick_labels = colorbar.ax.get_xticklabels() if orientation == 'horizontal' else colorbar.ax.get_yticklabels()
+        for tick_label in tick_labels:
+            tick_label.set_fontweight('bold')
+        fig.tight_layout()
+        position = ax.get_position()
+        thickness = 0.54 / (fig.get_figheight() if orientation == 'horizontal' else fig.get_figwidth())
+        if orientation == 'horizontal':
+            ax.set_position([position.x0, position.y1 - thickness, position.width, thickness])
+        else:
+            x0 = position.x0 if label_side == 'right' else position.x1 - thickness
+            ax.set_position([x0, position.y0, thickness, position.height])
+        fig.savefig(filename, dpi=600, bbox_inches='tight')
+        plt.close(fig)
 
     def add_temperature_isoline(self, fig, T_celsius: float):
         """Add one highlighted isotherm to a figure returned by plot_ternary."""
@@ -1034,7 +1095,7 @@ class ternary_gtx_plotter(ternary_interpolation):
                 x=[point[0] for point in contour],
                 y=[point[1] for point in contour],
                 z=[point[2] for point in contour],
-                mode='lines', line=dict(color='black', width=8),
+                mode='lines', line=dict(color='purple', width=6),
                 name=f'{T_celsius:.2f} C energy slice', showlegend=index == 0,
                 hovertemplate=f'<b>Energy slice: {T_celsius:.2f} C</b><extra></extra>'
             ))
@@ -1186,7 +1247,7 @@ class ternary_gtx_plotter(ternary_interpolation):
         
         return contours
 
-    def plot_ternary(self):
+    def plot_ternary(self, show_axes: bool = True, show_terminal_labels: bool = True):
         fig = go.Figure()
 
         self.plotting_df = pd.concat(self.equil_df_list)
@@ -1351,6 +1412,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             mode='text',
         text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
             textposition='top center',
+            visible=show_terminal_labels,
             showlegend=False,
             textfont=dict(size=12)
         ))
@@ -1375,9 +1437,9 @@ class ternary_gtx_plotter(ternary_interpolation):
                         showaxeslabels=False,
                         showgrid=False,
                 ),
-                xaxis_visible=True,
-                yaxis_visible=True,
-                zaxis_visible=True,
+                xaxis_visible=show_axes,
+                yaxis_visible=show_axes,
+                zaxis_visible=show_axes,
                 bgcolor='white',
                 camera=dict(
                     projection=dict(type='orthographic'),         

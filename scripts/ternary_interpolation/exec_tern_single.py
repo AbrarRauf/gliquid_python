@@ -8,11 +8,14 @@ import pandas as pd
 dump_dir = "all_dumps/for_PC/"
 read_dir = "all_dumps/binary_fits/"
 
-# Set to a Celsius value (for example, 650.0) to generate a free-energy slice
 # and highlight the corresponding isotherm. Set to None to disable both.
 ENERGY_TEMP_C = 1350
 # ENERGY_TEMP_C = 1700
 SHOW_ENERGY_COMPOSITION_TRIANGLE = False
+SHOW_ENERGY_SOLID_LABELS = False
+CLIP_LIQUID_TO_LOWER_HULL = True
+SHOW_TERNARY_AXES = False
+SHOW_TERMINAL_REFERENCE_LABELS = False
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
@@ -103,7 +106,7 @@ def plot_ternary_system():
     # print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=10, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=1, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     # print(plotter.hsx_df)
 
@@ -118,16 +121,31 @@ def plot_ternary_system():
     if ENERGY_TEMP_C is not None:
         try:
             energy_result = plotter.plot_free_energy_slice(
-                ENERGY_TEMP_C, show_composition_triangle=SHOW_ENERGY_COMPOSITION_TRIANGLE
+                ENERGY_TEMP_C,
+                show_composition_triangle=SHOW_ENERGY_COMPOSITION_TRIANGLE,
+                show_solid_labels=SHOW_ENERGY_SOLID_LABELS,
+                show_terminal_labels=SHOW_TERMINAL_REFERENCE_LABELS,
+                clip_liquid_to_lower_hull=CLIP_LIQUID_TO_LOWER_HULL,
             )
             temp_tag = f"{energy_result['temperature_c']:.2f}".replace('-', 'm').replace('.', 'p')
             energy_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C.html'
+            colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C_colorbar.png'
+            vertical_colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C_colorbar_vertical.png'
+            left_colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C_colorbar_vertical_left.png'
             ploff.plot(energy_result['figure'], filename=energy_filename, auto_open=True)
+            plotter.save_free_energy_colorbar(energy_result, colorbar_filename)
+            plotter.save_free_energy_colorbar(energy_result, vertical_colorbar_filename, orientation='vertical')
+            plotter.save_free_energy_colorbar(
+                energy_result, left_colorbar_filename, orientation='vertical', label_side='left'
+            )
             print(
                 f"Requested energy slice at {energy_result['requested_temperature_c']:.2f} C; "
                 f"using nearest grid temperature {energy_result['temperature_c']:.2f} C."
             )
             print(f"Saved free-energy slice to: {energy_filename}")
+            print(f"Saved free-energy colorbar to: {colorbar_filename}")
+            print(f"Saved vertical free-energy colorbar to: {vertical_colorbar_filename}")
+            print(f"Saved left-side free-energy colorbar to: {left_colorbar_filename}")
         except ValueError as exc:
             print(f"Free-energy slice error: {exc}")
             c_grid = plotter.T_grid - 273.15
@@ -136,7 +154,10 @@ def plot_ternary_system():
                 f"with nominal increment {plotter.T_incr:.2f}."
             )
 
-    tern_fig = plotter.plot_ternary()
+    tern_fig = plotter.plot_ternary(
+        show_axes=SHOW_TERNARY_AXES,
+        show_terminal_labels=SHOW_TERMINAL_REFERENCE_LABELS,
+    )
     if energy_result is not None:
         try:
             plotter.add_temperature_isoline(tern_fig, energy_result['temperature_c'])

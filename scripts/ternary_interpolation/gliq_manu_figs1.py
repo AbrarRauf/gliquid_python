@@ -768,13 +768,37 @@ def inter_figure_filtered():
     plt.show()
 
 def inter_figure_correction():
+    TICK_LABEL_SIZE = 15
+    AXIS_LABEL_SIZE = 15
+    AXIS_BORDER_WIDTH = 1.0
+    LEGEND_FONT_SIZE = 14
+    CORRECTION_FIGURE_SIZE = (9.75, 6)
+    plt.rcParams['font.family'] = 'Arial'
+
+    def format_and_save(fig, ax, cbar, filename):
+        ax.tick_params(axis='both', which='major', labelsize=TICK_LABEL_SIZE)
+        for spine in ax.spines.values():
+            spine.set_linewidth(AXIS_BORDER_WIDTH)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontweight('bold')
+        ax.legend(fontsize=LEGEND_FONT_SIZE)
+        cbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
+        cbar.ax.yaxis.label.set_fontsize(AXIS_LABEL_SIZE)
+        for label in cbar.ax.get_yticklabels():
+            label.set_fontweight('bold')
+        cbar.outline.set_linewidth(AXIS_BORDER_WIDTH)
+        fig.tight_layout()
+        fig.savefig(f'figures/{filename}.png', dpi=300, bbox_inches='tight')
+        fig.savefig(f'figures/{filename}.svg', dpi=300, bbox_inches='tight')
+
     inter_path = "all_dumps/gliq_manu_forreal_plusML_correction/optimized_l0_tern_results.xlsx"
     
     # Load the optimization results
     df = pd.read_excel(inter_path)
+    l0_tern_kj = df['l0_tern'] / 1000
     
     # Create the figure
-    plt.figure(figsize=(9, 6))
+    fig, ax = plt.subplots(figsize=CORRECTION_FIGURE_SIZE)
     
     # Plot initial predicted temperatures (single color)
     plt.scatter(
@@ -802,20 +826,20 @@ def inter_figure_correction():
     scatter = plt.scatter(
         df['melting_point_k'],
         df['final_gliq_temp'],
-        c=df['l0_tern'],
+        c=l0_tern_kj,
         s=80,
         cmap='RdBu_r',  # Diverging colormap: red (negative) -> white (0) -> blue (positive)
         edgecolors='black',
         linewidths=1,
         label='Corrected prediction',
         zorder=3,
-        vmin=-abs(df['l0_tern']).max(),  # Center colormap at 0
-        vmax=abs(df['l0_tern']).max()
+        vmin=-abs(l0_tern_kj).max(),  # Center colormap at 0
+        vmax=abs(l0_tern_kj).max()
     )
     
     # Add colorbar
-    cbar = plt.colorbar(scatter)
-    cbar.set_label('Ternary L0-term (J/mol)', rotation=90, labelpad=20, fontweight='bold')
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Ternary L0-term (kJ/mol)', rotation=90, labelpad=20, fontweight='bold')
     
     # Plot the y=x reference line with slight extension beyond data range
     min_val = min(df['melting_point_k'].min(), 
@@ -832,33 +856,32 @@ def inter_figure_correction():
              'k--', zorder=0)
     
     # Axis labels and formatting
-    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
-    plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
-    plt.legend()
-    plt.tight_layout()
+    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+    plt.ylabel('Predicted Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+    format_and_save(fig, ax, cbar, 'inter_figure_correction')
     plt.show()
     
     # Create second figure with only corrected results
-    plt.figure(figsize=(9, 6))
+    fig, ax = plt.subplots(figsize=CORRECTION_FIGURE_SIZE)
     
     # Plot only final corrected temperatures colored by l0_tern value
     scatter = plt.scatter(
         df['melting_point_k'],
         df['final_gliq_temp'],
-        c=df['l0_tern'],
+        c=l0_tern_kj,
         s=80,
         cmap='RdBu_r',  # Diverging colormap: red (negative) -> white (0) -> blue (positive)
         edgecolors='black',
         linewidths=1,
         label='Corrected prediction',
         zorder=3,
-        vmin=-abs(df['l0_tern']).max(),  # Center colormap at 0
-        vmax=abs(df['l0_tern']).max()
+        vmin=-abs(l0_tern_kj).max(),  # Center colormap at 0
+        vmax=abs(l0_tern_kj).max()
     )
     
     # Add colorbar
-    cbar = plt.colorbar(scatter)
-    cbar.set_label('Ternary L0-term (J/mol)', rotation=90, labelpad=20, fontweight='bold')
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Ternary L0-term (kJ/mol)', rotation=90, labelpad=20, fontweight='bold')
     
     # Plot the y=x reference line with slight extension beyond data range
     min_val = min(df['melting_point_k'].min(), 
@@ -873,10 +896,9 @@ def inter_figure_correction():
              'k--', zorder=0)
     
     # Axis labels and formatting
-    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontweight='bold')
-    plt.ylabel('Interpolated Melting Temperature (K)', fontweight='bold')
-    plt.legend()
-    plt.tight_layout()
+    plt.xlabel('MPDS Congruent Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+    plt.ylabel('Interpolated Melting Temperature (K)', fontsize=AXIS_LABEL_SIZE, fontweight='bold')
+    format_and_save(fig, ax, cbar, 'inter_figure_correction_only')
     plt.show()
 
 
@@ -1439,11 +1461,11 @@ def plot_L_parameter_distributions(meta_data_path="all_dumps/gliq_manu_test3/ter
 
 
 def main():
-    eutectic_fig()
+    # eutectic_fig()
     # inter_figure()
     # inter_figure_raw()
     # inter_figure_filtered()
-    # inter_figure_correction()
+    inter_figure_correction()
     # inter_figure_error_metrics()
     
     # # Run hull metrics analysis

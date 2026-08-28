@@ -192,31 +192,32 @@ class HSX:
 
         fig.add_trace(scatter)
 
+        visible_simplices = []
         for simplex in self.simplices:
-            x_coords = self.points[simplex, 0]
-            y_coords = self.points[simplex, 1]
-            z_coords = self.points[simplex, 2]
+            facet_points = self.points[simplex]
+            if np.isclose(np.cross(facet_points[1] - facet_points[0], facet_points[2] - facet_points[0])[2],
+                          0.0, atol=1e-12):
+                continue
+            visible_simplices.append(simplex)
 
-            i = np.array([0])
-            j = np.array([1])
-            k = np.array([2])
-
-            trace = go.Mesh3d(x=x_coords, y=y_coords, z=z_coords, alphahull=5, opacity=0.3, color='cyan', i=i, j=j, k=k,
-                              name='Simplex')
-
-            # Add both the triangle and vertex traces to the figure
-            fig.add_trace(trace)
-
-        # Create legend entries
-        legend_elements = []
+        visible_simplices = np.asarray(visible_simplices)
+        if visible_simplices.size:
+            palette = ['#42BFC7', '#79D9DE', '#2A9EAB', '#A0E8E8']
+            edge_owners, facet_colors = {}, []
+            for facet_index, simplex in enumerate(visible_simplices):
+                edges = [tuple(sorted((simplex[i], simplex[(i + 1) % 3]))) for i in range(3)]
+                used_colors = {facet_colors[edge_owners[edge]] for edge in edges if edge in edge_owners}
+                facet_colors.append(next(color for color in palette if color not in used_colors))
+                edge_owners.update({edge: facet_index for edge in edges})
+            fig.add_trace(go.Mesh3d(
+                x=self.points[:, 0], y=self.points[:, 1], z=self.points[:, 2],
+                i=visible_simplices[:, 0], j=visible_simplices[:, 1], k=visible_simplices[:, 2],
+                opacity=0.45, facecolor=facet_colors, flatshading=True, name='Simplex'
+            ))
 
         for name, color in self.color_map.items():
-            legend_elements.append(dict(x=0, y=0, xref='paper', yref='paper', text=name, marker=dict(color=color)))
-
-        # Add legend entries
-        for entry in legend_elements:
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines+text', marker=dict(color=entry['marker']['color']),
-                                     name=entry['text']))
+            fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode='lines',
+                                       line=dict(color=color, width=8), name=name))
 
         fig.update_traces(
             selector=dict(type='mesh3d'),
