@@ -11,23 +11,86 @@ read_dir = "all_dumps/binary_fits/"
 # and highlight the corresponding isotherm. Set to None to disable both.
 ENERGY_TEMP_C = 1350
 # ENERGY_TEMP_C = 1700
-SHOW_ENERGY_COMPOSITION_TRIANGLE = False
+SHOW_ENERGY_COMPOSITION_TRIANGLE = True
 SHOW_ENERGY_SOLID_LABELS = False
 CLIP_LIQUID_TO_LOWER_HULL = True
 SHOW_TERNARY_AXES = False
 SHOW_TERMINAL_REFERENCE_LABELS = False
+# Places tern_sys[0] at the apex and tern_sys[2]-tern_sys[1] along the base.
+GENERATE_LIQUIDUS_PROJECTION = False
+# Set to None to retain the generated binary order.
+# BINARY_PLOT_ORDER = ["Si-Ce", "Fe-Ce", "Si-Fe"]
+BINARY_PLOT_ORDER = None
 
 if not os.path.exists(dump_dir):
     os.makedirs(dump_dir)
 
-def plot_ternary_system():
+def _mirror_binary_figure(fig, left_component, right_component):
+    for trace in fig.data:
+        if trace.x is not None:
+            trace.x = [None if value is None else 100 - float(value) for value in trace.x]
+
+    for annotation in fig.layout.annotations or ():
+        if annotation.x is not None:
+            annotation.x = (1 if annotation.xref == 'paper' else 100) - float(annotation.x)
+        if annotation.xanchor == 'left':
+            annotation.xanchor = 'right'
+        elif annotation.xanchor == 'right':
+            annotation.xanchor = 'left'
+
+    legend = fig.layout.legend
+    if legend.x is not None:
+        legend.x = 1 - float(legend.x)
+    if legend.xanchor == 'left':
+        legend.xanchor = 'right'
+    elif legend.xanchor == 'right':
+        legend.xanchor = 'left'
+    fig.update_layout(title_text=f'<b>{left_component}-{right_component} DFT-Referenced Phase Diagram</b>')
+
+
+def _order_binary_figures(figures, generated_systems, requested_order=None):
+    if requested_order is None:
+        return figures
+    if len(requested_order) != len(figures):
+        raise ValueError(f"Expected {len(figures)} binary systems, received {len(requested_order)}.")
+
+    figure_map = {}
+    for system, figure in zip(generated_systems, figures):
+        components = system.split('-')
+        figure_map[frozenset(components)] = (figure, tuple(sorted(components)))
+
+    ordered_figures = []
+    seen = set()
+    for system in requested_order:
+        components = system.split('-')
+        if len(components) != 2 or components[0] == components[1]:
+            raise ValueError(f"Invalid binary system '{system}'. Use the form 'A-B'.")
+        key = frozenset(components)
+        if key not in figure_map:
+            raise ValueError(f"Requested binary system '{system}' is not available.")
+        if key in seen:
+            raise ValueError(f"Binary system '{system}' is listed more than once.")
+        seen.add(key)
+
+        figure, canonical_order = figure_map[key]
+        if tuple(components) != canonical_order:
+            _mirror_binary_figure(figure, *components)
+        else:
+            figure.update_layout(title_text=f'<b>{system} DFT-Referenced Phase Diagram</b>')
+        ordered_figures.append(figure)
+
+    return ordered_figures
+
+
+def plot_ternary_system(binary_plot_order=None):
     # Bi-Cd-Sn system
     os.environ["NEW_MP_API_KEY"] = "Rtb4ppAs9rcNVzh10IVdBRh6HwlBymcJ"
     # tern_sys = ["Cd", "Sn", "As"]
     # tern_sys = ["Er", "Cu", "Ge"]
     # tern_sys = ["Ce", "Zn", "In"]
     # tern_sys = ["Tm", "Cu", "Ge"]
-    tern_sys = ["Fe", "Ce", "Si"]
+    # tern_sys = ["Fe", "Ce", "Si"]
+    tern_sys = ["Ce", "Zn", "In"]
     # tern_sys = ["Bi", "Cd", "Sn"]
     # tern_sys = ["Er", "Mn", "Ge"]
     # tern_sys = ["Ce", "Fe", "Si"]
@@ -106,7 +169,7 @@ def plot_ternary_system():
     # print(fitorpred)
 
     plotter = ternary_gtx_plotter(tern_sys, data_dir, interp_type="linear", param_format=tern_param_format,
-                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=1, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
+                                  L_dict=binary_L_dict, temp_slider=[0, 0], T_incr=10, delta=0.01, fit_or_pred=fitorpred, L_tern = [l0_tern, 0])
     plotter.interpolate()
     # print(plotter.hsx_df)
 
@@ -133,6 +196,7 @@ def plot_ternary_system():
             vertical_colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C_colorbar_vertical.png'
             left_colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_energy_{temp_tag}C_colorbar_vertical_left.png'
             ploff.plot(energy_result['figure'], filename=energy_filename, auto_open=True)
+            # exit()
             plotter.save_free_energy_colorbar(energy_result, colorbar_filename)
             plotter.save_free_energy_colorbar(energy_result, vertical_colorbar_filename, orientation='vertical')
             plotter.save_free_energy_colorbar(
@@ -164,6 +228,22 @@ def plot_ternary_system():
         except ValueError as exc:
             print(f"Temperature-isoline error: {exc}")
 
+    if GENERATE_LIQUIDUS_PROJECTION:
+        try:
+            projection_result = plotter.plot_liquidus_projection(apex_component=tern_sys[0])
+            projection_filename = dump_dir + f'{"-".join(sorted_sys)}_liquidus_projection.html'
+            projection_colorbar_filename = dump_dir + f'{"-".join(sorted_sys)}_liquidus_projection_colorbar.png'
+            ploff.plot(projection_result['figure'], filename=projection_filename, auto_open=True)
+            plotter.save_liquidus_projection_colorbar(projection_result, projection_colorbar_filename)
+            base_left, base_right = projection_result['base_components']
+            print(
+                f"Saved liquidus projection with {base_left}-{base_right} at the base and "
+                f"{projection_result['apex_component']} at the apex to: {projection_filename}"
+            )
+            print(f"Saved liquidus projection colorbar to: {projection_colorbar_filename}")
+        except ValueError as exc:
+            print(f"Liquidus-projection error: {exc}")
+
     # print(plotter.liq_plotting_df)
     # update layout and remove axis and background
     # tern_fig.update_layout(
@@ -175,7 +255,9 @@ def plot_ternary_system():
     #     )
     # )
 
-    bin_fig_list = plotter.bin_fig_list
+    bin_fig_list = _order_binary_figures(
+        plotter.bin_fig_list, list(plotter.L_dict), binary_plot_order
+    )
     for i, bin_fig in enumerate(bin_fig_list):
         bin_fig.show()
 
@@ -197,4 +279,4 @@ def plot_ternary_system():
 
 
 if __name__ == "__main__":
-    plot_ternary_system()
+    plot_ternary_system(binary_plot_order=BINARY_PLOT_ORDER)

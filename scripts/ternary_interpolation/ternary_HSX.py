@@ -19,6 +19,7 @@ from mp_api.client import MPRester
 from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.core.composition import Element, Composition
 from pymatgen.entries.computed_entries import ComputedStructureEntry
+from scipy.interpolate import griddata
 from scipy.spatial import Delaunay
 from copy import deepcopy
 from auth import mpapi_key as MAPI_KEY
@@ -35,6 +36,7 @@ import itertools
 
 _phase_transitions_raw = json.load(open(config.phase_transitions_file))
 phase_transitions = _phase_transitions_raw.get('elements', {})
+_ENERGY_MAGMA_MIN = 0.18
 
 # MP thermo payloads can include legacy @module paths (e.g., pymatgen.core.entries)
 # that are no longer importable in newer pymatgen builds. Keep the client lazy so
@@ -906,6 +908,9 @@ class ternary_gtx_plotter(ternary_interpolation):
             liquid_triangles = liquid_triangles[np.all(liquid_on_hull[liquid_triangles], axis=1)]
         has_solid = np.array([any(slice_df.iloc[index]['Phase'] != 'L' for index in simplex) for simplex in simplices])
         hull_simplices = simplices[has_solid & (projected_twice_area > 1e-10)]
+        energy_colorscale = px.colors.sample_colorscale(
+            'Magma', np.linspace(_ENERGY_MAGMA_MIN, 1, 256)
+        )
 
         fig = go.Figure()
         if liquid_triangles.size:
@@ -913,7 +918,7 @@ class ternary_gtx_plotter(ternary_interpolation):
             fig.add_trace(go.Mesh3d(
                 x=liquid_df['x0'], y=liquid_df['x1'], z=liquid_energies,
                 i=liquid_triangles[:, 0], j=liquid_triangles[:, 1], k=liquid_triangles[:, 2],
-                intensity=liquid_energies, colorscale='Magma', opacity=1.0,
+                intensity=liquid_energies, colorscale=energy_colorscale, opacity=1.0,
                 colorbar=dict(title='G (kJ/mol)'), name=liquid_name,
                 customdata=np.column_stack((liquid_raw['x0'], liquid_raw['x1'])),
                 hovertemplate=(
@@ -952,11 +957,11 @@ class ternary_gtx_plotter(ternary_interpolation):
         solid_indices = np.flatnonzero(~liquid_mask)
         hull_indices = np.unique(simplices)
         solid_groups = (
-            (solid_indices[np.isin(solid_indices, hull_indices)], 'Solid phases (on lower hull)', '#F4D35E'),
-            (solid_indices[~np.isin(solid_indices, hull_indices)], 'Solid phases (off lower hull)', '#4EA8DE'),
+            (solid_indices[np.isin(solid_indices, hull_indices)], 'Solid phases (on lower hull)', 'circle'),
+            (solid_indices[~np.isin(solid_indices, hull_indices)], 'Solid phases (off lower hull)', 'diamond'),
         )
         solid_annotations = []
-        for group_indices, group_name, group_color in solid_groups:
+        for group_indices, group_name, symbol in solid_groups:
             if not group_indices.size:
                 continue
             solids = slice_df.iloc[group_indices]
@@ -974,7 +979,12 @@ class ternary_gtx_plotter(ternary_interpolation):
             fig.add_trace(go.Scatter3d(
                 x=solid_points['x0'], y=solid_points['x1'], z=energies[group_indices],
                 mode='markers',
-                marker=dict(size=5, color=group_color, line=dict(color='#30343B', width=1)),
+                marker=(
+                    dict(size=7.5, symbol=symbol, color='#2FBF71',
+                         line=dict(color='black', width=1))
+                    if symbol == 'circle'
+                    else dict(size=7.5, symbol=symbol, color='#4EA8DE', line=dict(width=0))
+                ),
                 name=group_name,
                 customdata=np.column_stack((solids['x0'], solids['x1'], solids['Phase'])),
                 showlegend=False,
@@ -987,15 +997,14 @@ class ternary_gtx_plotter(ternary_interpolation):
             ))
 
         if show_composition_triangle:
-            g_floor = float(np.min(energies))
             fig.add_trace(go.Scatter3d(
                 x=[0, 0.5, 1, 0], y=[0, np.sqrt(3) / 2, 0, 0],
-                z=[g_floor] * 4, mode='lines', line=dict(color='black', width=5),
+                z=[0] * 4, mode='lines', line=dict(color='black', width=3),
                 showlegend=False, hoverinfo='skip'
             ))
             fig.add_trace(go.Scatter3d(
                 x=[-0.02, 0.48, 0.98], y=[0.02, np.sqrt(3) / 2 + 0.02, 0.02],
-                z=[g_floor] * 3, mode='text',
+                z=[0] * 3, mode='text',
                 text=[f'<b>{self.tern_sys[0]}</b>', f'<b>{self.tern_sys[2]}</b>', f'<b>{self.tern_sys[1]}</b>'],
                 visible=show_terminal_labels, showlegend=False, hoverinfo='skip'
             ))
@@ -1005,7 +1014,7 @@ class ternary_gtx_plotter(ternary_interpolation):
                 xaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False, visible=False),
                 yaxis=dict(title=' ', showticklabels=False, showaxeslabels=False, showgrid=False, visible=False),
                 zaxis=dict(title='G (kJ/mol)', visible=False), bgcolor='white',
-                aspectmode='manual', aspectratio=dict(x=1, y=0.9, z=0.45),
+                aspectmode='manual', aspectratio=dict(x=1, y=0.9, z=0.85),
                 camera=dict(projection=dict(type='orthographic')),
                 annotations=solid_annotations if show_solid_labels else []
             ),
@@ -1019,20 +1028,26 @@ class ternary_gtx_plotter(ternary_interpolation):
         """Save a standalone colorbar matching a free-energy slice."""
         import matplotlib.pyplot as plt
         from matplotlib.cm import ScalarMappable
-        from matplotlib.colors import Normalize
+        from matplotlib.colors import LinearSegmentedColormap, Normalize
 
         if orientation not in {'horizontal', 'vertical'}:
             raise ValueError("Colorbar orientation must be 'horizontal' or 'vertical'.")
         liquid_mask = energy_result['raw_slice_df']['Phase'].eq('L').to_numpy()
         liquid_energies = energy_result['hull_points'][liquid_mask, 2] / 1000
         fig, ax = plt.subplots(figsize=(9, 1.6) if orientation == 'horizontal' else (1.6, 9))
+        magma = plt.get_cmap('magma')
         mapper = ScalarMappable(
             norm=Normalize(vmin=float(liquid_energies.min()), vmax=float(liquid_energies.max())),
-            cmap='magma'
+            cmap=LinearSegmentedColormap.from_list(
+                'truncated_magma', magma(np.linspace(_ENERGY_MAGMA_MIN, 1, 256))
+            )
         )
         mapper.set_array([])
         colorbar = fig.colorbar(mapper, cax=ax, orientation=orientation)
-        colorbar.set_label('G (kJ/mol)', fontsize=20, fontweight='bold', labelpad=8)
+        colorbar.set_label(
+            f"G (kJ/mol) at T = {energy_result['temperature_k']:.2f} K",
+            fontsize=20, fontweight='bold', labelpad=8
+        )
         colorbar.ax.tick_params(labelsize=18, width=1.5, length=6)
         if orientation == 'vertical':
             colorbar.ax.yaxis.set_ticks_position(label_side)
@@ -1095,7 +1110,7 @@ class ternary_gtx_plotter(ternary_interpolation):
                 x=[point[0] for point in contour],
                 y=[point[1] for point in contour],
                 z=[point[2] for point in contour],
-                mode='lines', line=dict(color='purple', width=6),
+                mode='lines', line=dict(color='purple', width=4),
                 name=f'{T_celsius:.2f} C energy slice', showlegend=index == 0,
                 hovertemplate=f'<b>Energy slice: {T_celsius:.2f} C</b><extra></extra>'
             ))
@@ -1448,6 +1463,129 @@ class ternary_gtx_plotter(ternary_interpolation):
         )
 
         return fig
+
+    def plot_liquidus_projection(self, apex_component=None):
+        """Plot the current liquidus as a 2D ternary temperature projection."""
+        if not hasattr(self, 'equil_df_list'):
+            raise ValueError("Run process_data() before plotting the liquidus projection.")
+
+        apex_component = apex_component or self.tern_sys[0]
+        if apex_component not in self.tern_sys:
+            raise ValueError(f"Projection apex '{apex_component}' is not in {self.tern_sys}.")
+        base_left, base_right = [component for component in reversed(self.tern_sys) if component != apex_component]
+
+        plotting_df = pd.concat(self.equil_df_list, ignore_index=True)
+        fractions = pd.DataFrame({
+            self.tern_sys[0]: 1 - plotting_df['x0_orig'] - plotting_df['x1_orig'],
+            self.tern_sys[1]: plotting_df['x0_orig'],
+            self.tern_sys[2]: plotting_df['x1_orig'],
+        })
+        plotting_df = plotting_df.assign(
+            projection_x=fractions[base_right] + 0.5 * fractions[apex_component],
+            projection_y=np.sqrt(3) / 2 * fractions[apex_component],
+            temperature_k=plotting_df['T'] + 273.15,
+        )
+        liquid_df = (
+            plotting_df[plotting_df['Phase'] == 'L'].sort_values('T')
+            .drop_duplicates(subset=['x0_orig', 'x1_orig'], keep='first')
+        )
+        solid_df = (
+            plotting_df[plotting_df['Phase'] != 'L'].sort_values('T')
+            .drop_duplicates(subset=['x0_orig', 'x1_orig'], keep='last')
+        )
+        if len(liquid_df) < 3:
+            raise ValueError("At least three liquidus points are required for a 2D projection.")
+
+        grid_x, grid_y = np.meshgrid(np.linspace(0, 1, 200), np.linspace(0, np.sqrt(3) / 2, 200))
+        grid_t = griddata(
+            (liquid_df['projection_x'], liquid_df['projection_y']),
+            liquid_df['temperature_k'], (grid_x, grid_y), method='linear'
+        )
+        temp_min = float(liquid_df['temperature_k'].min())
+        temp_max = float(liquid_df['temperature_k'].max())
+        temp_range = temp_max - temp_min
+
+        fig = go.Figure(go.Contour(
+            x=grid_x[0], y=grid_y[:, 0], z=grid_t, colorscale='Viridis',
+            zmin=temp_min, zmax=temp_max, line=dict(width=0),
+            contours=dict(coloring='heatmap', showlines=False),
+            colorbar=dict(
+                title=dict(text='Temperature (K)'), orientation='v', thickness=24,
+                len=0.85, x=1.03, y=0.5
+            ),
+            hovertemplate='Temperature: %{z:.1f} K<extra></extra>'
+        ))
+        if temp_range > 0:
+            fig.add_trace(go.Contour(
+                x=grid_x[0], y=grid_y[:, 0], z=grid_t, showscale=False,
+                colorscale=[[0, 'white'], [1, 'white']], line=dict(color='white', width=2),
+                contours=dict(
+                    coloring='lines', showlines=True, start=temp_min,
+                    end=temp_max, size=temp_range / 19
+                ),
+                hoverinfo='skip', name=''
+            ))
+        fig.add_trace(go.Scattergl(
+            x=solid_df['projection_x'], y=solid_df['projection_y'], mode='markers',
+            marker=dict(
+                size=15, color=solid_df['temperature_k'], colorscale='Viridis',
+                line=dict(width=2, color='black'), cmin=temp_min, cmax=temp_max,
+                showscale=False
+            ),
+            text=solid_df['Phase'], customdata=solid_df['temperature_k'],
+            hovertemplate='<b>%{text}</b><br>Temperature: %{customdata:.1f} K<extra></extra>',
+            showlegend=False
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0, 0.5, 1, 0], y=[0, np.sqrt(3) / 2, 0, 0], mode='lines',
+            line=dict(color='black', width=3.5), showlegend=False, hoverinfo='skip'
+        ))
+        fig.add_trace(go.Scatter(
+            x=[-0.025, 1.025, 0.5], y=[-0.025, -0.025, np.sqrt(3) / 2 + 0.025],
+            mode='text', text=[f'<b>{base_left}</b>', f'<b>{base_right}</b>', f'<b>{apex_component}</b>'],
+            textposition=['bottom right', 'bottom left', 'top center'],
+            textfont=dict(size=18), showlegend=False, hoverinfo='skip'
+        ))
+        fig.update_layout(
+            plot_bgcolor='white', width=1200, height=1000,
+            xaxis=dict(visible=False, range=[-0.08, 1.08], scaleanchor='y', scaleratio=1),
+            yaxis=dict(visible=False, range=[-0.08, np.sqrt(3) / 2 + 0.08]),
+            margin=dict(l=40, r=100, b=40, t=40)
+        )
+        return {
+            'figure': fig, 'liquid_df': liquid_df, 'solid_df': solid_df,
+            'temperature_min_k': temp_min, 'temperature_max_k': temp_max,
+            'apex_component': apex_component,
+            'base_components': (base_left, base_right),
+        }
+
+    @staticmethod
+    def save_liquidus_projection_colorbar(projection_result, filename):
+        """Save a standalone horizontal colorbar matching a liquidus projection."""
+        import matplotlib.pyplot as plt
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+
+        fig, ax = plt.subplots(figsize=(9, 1.6))
+        mapper = ScalarMappable(
+            norm=Normalize(
+                vmin=projection_result['temperature_min_k'],
+                vmax=projection_result['temperature_max_k']
+            ),
+            cmap='viridis'
+        )
+        mapper.set_array([])
+        colorbar = fig.colorbar(mapper, cax=ax, orientation='horizontal')
+        colorbar.set_label(
+            'All Labeled Temperatures (K)', fontsize=20,
+            fontweight='bold', labelpad=8
+        )
+        colorbar.ax.tick_params(labelsize=18, width=1.5, length=6)
+        for tick_label in colorbar.ax.get_xticklabels():
+            tick_label.set_fontweight('bold')
+        fig.tight_layout()
+        fig.savefig(filename, dpi=600, bbox_inches='tight')
+        plt.close(fig)
     
     def get_inter_melting_temps(self, interphases_for_melting: List[str]):
         if not hasattr(self, 'equil_df_list'):

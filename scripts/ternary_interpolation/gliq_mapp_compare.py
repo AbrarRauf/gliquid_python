@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from adjustText import adjust_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -104,11 +106,54 @@ def load_comparison(gliq_results: Path, mapp_output: Path, gliq_column: str) -> 
 
 def make_comparison_figure(comparison: pd.DataFrame, figures_dir: Path, output_name: str) -> None:
     plot_columns = ["melting_point_k", "gliq_melting_temp", "mapp_melting_temp"]
-    valid = comparison[plot_columns].dropna()
-    lim_min = valid.min().min()
-    lim_max = valid.max().max()
+    valid = comparison.dropna(subset=plot_columns)
+    lim_min = valid[plot_columns].min().min()
+    lim_max = valid[plot_columns].max().max()
     pad = 0.03 * (lim_max - lim_min) if lim_max > lim_min else 10.0
     limits = (lim_min - pad, lim_max + pad)
+
+    label_errors = {
+        column: (valid[column] - valid["melting_point_k"]).abs()
+        for column in ["gliq_melting_temp", "mapp_melting_temp"]
+    }
+    selected_indices = []
+
+    def add_indices(indices) -> None:
+        selected_indices.extend(index for index in indices if index not in selected_indices)
+
+    add_indices([valid["melting_point_k"].idxmin(), valid["melting_point_k"].idxmax()])
+    for errors in label_errors.values():
+        add_indices([errors.idxmin(), errors.idxmax()])
+    agreement_difference = label_errors["gliq_melting_temp"] - label_errors["mapp_melting_temp"]
+    add_indices([agreement_difference.idxmax(), agreement_difference.idxmin()])
+    while len(selected_indices) < min(12, len(valid)):
+        unselected = [index for index in valid.index if index not in selected_indices]
+        add_indices([max(
+            unselected,
+            key=lambda index: min(
+                abs(valid.at[index, "melting_point_k"] - valid.at[selected, "melting_point_k"])
+                for selected in selected_indices
+            )
+        )])
+    selected_labels = valid.loc[selected_indices]
+
+    def add_compound_labels(ax, pred_col: str, markers) -> None:
+        texts = [
+            ax.text(
+                row["melting_point_k"], row[pred_col],
+                re.sub(r"(\d+)", r"$_{\1}$", str(row["reduced_formula"])),
+                fontsize=9, fontweight="bold", zorder=4
+            )
+            for _, row in selected_labels.iterrows()
+        ]
+        adjust_text(
+            texts, ax=ax, objects=markers,
+            target_x=selected_labels["melting_point_k"], target_y=selected_labels[pred_col],
+            expand=(1.2, 1.35), force_text=(0.5, 0.8), force_static=(1.0, 1.2),
+            force_pull=(0.005, 0.005), force_explode=(0.4, 0.8),
+            max_move=(25, 25), iter_lim=500,
+            arrowprops=dict(arrowstyle="-", color="0.35", lw=0.7)
+        )
 
     plt.rcParams["font.family"] = "Arial"
     fig, axes = plt.subplots(1, 2, figsize=(12, 6), sharex=True, sharey=True)
@@ -117,7 +162,7 @@ def make_comparison_figure(comparison: pd.DataFrame, figures_dir: Path, output_n
         ["gliq_melting_temp", "mapp_melting_temp"],
         ["G-Liquid", "MAPP"],
     ):
-        ax.scatter(
+        markers = ax.scatter(
             valid["melting_point_k"],
             valid[column],
             c="tab:blue",
@@ -134,6 +179,7 @@ def make_comparison_figure(comparison: pd.DataFrame, figures_dir: Path, output_n
             label.set_fontweight("bold")
         for spine in ax.spines.values():
             spine.set_linewidth(1.0)
+        add_compound_labels(ax, column, markers)
 
     axes[0].set_ylabel("Predicted Melting Temperature (K)", fontsize=15, fontweight="bold")
     fig.supxlabel("MPDS Congruent Melting Temperature (K)", fontsize=15, fontweight="bold")
